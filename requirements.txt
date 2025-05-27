@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-dotenv
+google-generativeai
+httpx # Mattermost API 호출 및 외부 API 연동용
+mattermostdriver # Mattermost API 연동용
+# SQLAlchemy # SQL DB 연동 시 (예시)
+# psycopg2-binary # PostgreSQL 사용 시 (예시)
+# boto3 # AWS S3 연동 시 (예시)
+# opensearch-py # OpenSearch 연동 시 (예시)
+aiomysql # 비동기 MySQL 드라이버
+pytest
+pytest-asyncio

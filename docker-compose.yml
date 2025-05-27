@@ -1,0 +1,54 @@
+# docker-compose.yml: Docker Compose 설정 파일
+
+version: '3.8'
+
+services:
+  # FastAPI 애플리케이션 서비스
+  api:
+    build:
+      context: . # Dockerfile이 있는 현재 디렉토리
+      dockerfile: Dockerfile
+    container_name: ai_chatbot_api # 컨테이너 이름 지정
+    restart: unless-stopped # 오류로 인한 종료 시 자동 재시작
+    # .env 파일의 환경 변수를 컨테이너 내부로 전달
+    env_file:
+      - .env
+    environment:
+      # 데이터베이스 접속 정보
+      - DB_HOST=${DB_HOST:-118.67.131.22}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-fisaai}
+      - DB_PASSWORD=${DB_PASSWORD:-Woorifisa!4}
+      - DB_NAME=${DB_NAME:-ai_team_5}
+      - DB_CHARSET=${DB_CHARSET:-utf8mb4}
+      - DB_SSL_MODE=${DB_SSL_MODE:-DISABLED}
+      # Google Gemini API 키
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      # 오픈서치 API URL 설정
+      - OPENSEARCH_API_URL=${OPENSEARCH_API_URL:-https://team5opensearch.ap.loclx.io}
+      # 외부 RAG 서비스 URL
+      - EXTERNAL_RAG_SERVICE_URL=${EXTERNAL_RAG_SERVICE_URL}
+      # Mattermost 설정
+      - MATTERMOST_URL=${MATTERMOST_URL}
+      - MATTERMOST_BOT_TOKEN=${MATTERMOST_BOT_TOKEN}
+    ports:
+      - "${APP_PORT:-8126}:8126"
+    volumes:
+      # 개발 시 코드 실시간 반영을 위한 볼륨 마운트
+      - .:/app
+      # 로그 볼륨
+      - ./logs:/app/logs
+      # 파일 저장용 데이터 볼륨
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8126/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - ai_chatbot_network
+
+networks:
+  ai_chatbot_network:
+    driver: bridge
