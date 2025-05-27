@@ -5,7 +5,7 @@
 
 ## 1. 프로젝트 개요
 
-본 프로젝트는 Google Gemini 1.5 Pro LLM을 기반으로 하는 FastAPI 웹 애플리케이션입니다. 주요 기능은 사내 문서 및 회의록에 대한 질의응답(Q&A)이며, Retriever-Augmented Generation (RAG) 기술을 활용하여 정확하고 관련성 높은 답변을 제공합니다. 또한, LLM의 추론 과정을 스트리밍하여 사용자에게 투명성을 제공하고, Mattermost와 연동하여 특정 업무 자동화 기능을 수행합니다.
+본 프로젝트는  QWEN-8B LLM을 기반으로 하는 FastAPI 웹 애플리케이션입니다. 주요 기능은 사내 문서 및 회의록에 대한 질의응답(Q&A)이며, Retriever-Augmented Generation (RAG) 기술을 활용하여 정확하고 관련성 높은 답변을 제공합니다. 또한, LLM의 추론 과정을 스트리밍하여 사용자에게 투명성을 제공하고, Mattermost와 연동하여 특정 업무 자동화 기능을 수행합니다.
 
 **주요 목표:**
 
@@ -21,7 +21,7 @@
 
 *   **프로그래밍 언어:** Python 3.9+
 *   **웹 프레임워크:** FastAPI
-*   **LLM:** Google Gemini 1.5 Pro
+*   **LLM:** QWEN-8B
 *   **데이터 유효성 검사:** Pydantic
 *   **비동기 처리:** `asyncio`, `httpx`
 *   **RAG 백엔드 (예정/연동):** OpenSearch (또는 유사 벡터 DB)
@@ -31,7 +31,25 @@
 *   **CI/CD (기본 구성):** [entrypoint.sh](cci:7://file:///c:/ITStudy/CHAT/entrypoint.sh:0:0-0:0) 내 `pytest` 실행
 
 ## 3. 디렉토리 구조
-c:\ITStudy\CHAT ├── .env # (Git 무시) 실제 환경 변수 설정 파일 ├── .env.example # 환경 변수 설정 예시 파일 ├── .gitignore # Git 무시 파일 목록 ├── .pytest_cache/ # Pytest 캐시 디렉토리 ├── Dockerfile # Docker 이미지 빌드 설정 ├── README.md # 본 문서 ├── pycache/ # Python 컴파일 캐시 ├── app/ # 핵심 애플리케이션 로직 │ ├── init.py │ ├── core/ # 설정, 공통 유틸리티, 로깅 등 │ │ ├── init.py │ │ ├── config.py # 환경 변수 로드 및 애플리케이션 설정 관리 │ │ └── logger.py # (예시) 로깅 설정 │ ├── models/ # (현재 미사용, 필요시 DB 모델 정의) │ │ └── init.py │ ├── routers/ # API 엔드포인트(라우트) 정의 │ │ ├── init.py │ │ └── chat.py # 채팅 관련 API 라우터 (/api/v1/chat/rag/stream) │ ├── schemas/ # Pydantic 스키마 (API 요청/응답 데이터 모델) │ │ ├── init.py │ │ └── chat.py # ChatRequest, LLMResponseChunk 등 정의 │ └── services/ # 비즈니스 로직 (핵심 기능 구현) │ ├── init.py │ ├── chat_history_service.py # 대화 기록 관리 서비스 │ ├── db_service.py # 데이터베이스 연동 서비스 (사용자 정보 등) │ ├── external_rag_service.py # 외부 RAG 서비스(OpenSearch) 연동 │ ├── llm_service.py # LLM(Gemini) API 연동 및 응답 생성 │ ├── mattermost_service.py # Mattermost API 연동 │ └── workflow_service.py # 전체 요청 처리 흐름(오케스트레이션) 관리 ├── data/ # (예시) 초기 데이터, 임시 파일 등 (현재는 비어있음) ├── docker-compose.yml # Docker Compose 설정 (서비스 실행 환경 정의) ├── entrypoint.sh # Docker 컨테이너 시작 시 실행되는 스크립트 ├── logs/ # (예시) 애플리케이션 로그 저장 디렉토리 ├── main.py # FastAPI 애플리케이션의 주 진입점 ├── manage_mattermost_users.py # Mattermost 사용자 관리 및 DB 동기화 스크립트 └── requirements.txt # Python 의존성 패키지 목록
+c:\ITStudy\CHAT 
+├── .env # (Git 무시) 실제 환경 변수 설정 파일 
+├── .env.example # 환경 변수 설정 예시 파일 
+├── .gitignore # Git 무시 파일 목록 
+├── .pytest_cache/ # Pytest 캐시 디렉토리 
+├── Dockerfile # Docker 이미지 빌드 설정 
+├── README.md # 본 문서 
+├── pycache/ # Python 컴파일 캐시 
+├── app/ # 핵심 애플리케이션 로직 
+│ ├── init.py 
+│ ├── core/ # 설정, 공통 유틸리티, 로깅 등 
+│ │ ├── init.py 
+│ │ ├── config.py # 환경 변수 로드 및 애플리케이션 설정 관리 
+│ │ └── logger.py # (예시) 로깅 설정 
+│ ├── models/ # (현재 미사용, 필요시 DB 모델 정의) 
+│ │ └── init.py 
+│ ├── routers/ # API 엔드포인트(라우트) 정의 
+│ │ ├── init.py 
+│ │ └── chat.py # 채팅 관련 API 라우터 (/api/v1/chat/rag/stream) │ ├── schemas/ # Pydantic 스키마 (API 요청/응답 데이터 모델) │ │ ├── init.py │ │ └── chat.py # ChatRequest, LLMResponseChunk 등 정의 │ └── services/ # 비즈니스 로직 (핵심 기능 구현) │ ├── init.py │ ├── chat_history_service.py # 대화 기록 관리 서비스 │ ├── db_service.py # 데이터베이스 연동 서비스 (사용자 정보 등) │ ├── external_rag_service.py # 외부 RAG 서비스(OpenSearch) 연동 │ ├── llm_service.py # LLM(Gemini) API 연동 및 응답 생성 │ ├── mattermost_service.py # Mattermost API 연동 │ └── workflow_service.py # 전체 요청 처리 흐름(오케스트레이션) 관리 ├── data/ # (예시) 초기 데이터, 임시 파일 등 (현재는 비어있음) ├── docker-compose.yml # Docker Compose 설정 (서비스 실행 환경 정의) ├── entrypoint.sh # Docker 컨테이너 시작 시 실행되는 스크립트 ├── logs/ # (예시) 애플리케이션 로그 저장 디렉토리 ├── main.py # FastAPI 애플리케이션의 주 진입점 ├── manage_mattermost_users.py # Mattermost 사용자 관리 및 DB 동기화 스크립트 └── requirements.txt # Python 의존성 패키지 목록
 
 CopyInsert
 
@@ -53,7 +71,7 @@ CopyInsert
     *   채팅 요청 처리의 전체적인 흐름을 관장하는 핵심 서비스입니다.
     *   `process_chat_request_stream` 메소드: 사용자 요청을 받아 의도 분류, RAG 검색 (필요시), LLM 질의, 응답 스트리밍까지의 과정을 오케스트레이션합니다.
 *   **`app/services/llm_service.py`**: (`LLMService` 클래스)
-    *   Google Gemini API와 직접 통신합니다.
+    *   QWEN-8B과 통신합니다.
     *   `classify_intent`: 사용자 질의의 의도를 분류합니다.
     *   `generate_response_stream`: RAG 검색 결과 및 대화 히스토리를 바탕으로 LLM에게 답변 생성을 요청하고, 그 결과를 스트리밍 방식으로 반환합니다. LLM의 내부 추론 과정(`[THOUGHT]...[/THOUGHT]`)을 파싱하여 `LLMReasoningStep` 객체로 만듭니다.
 *   **`app/services/external_rag_service.py`**: (`ExternalRAGService` 클래스)
@@ -75,7 +93,6 @@ CopyInsert
 
 | 변수명                      | 설명                                                                 | 예시 값                                        | 필수 여부 |
 | :-------------------------- | :------------------------------------------------------------------- | :--------------------------------------------- | :------ |
-| `GOOGLE_API_KEY`            | Google Gemini API 사용을 위한 API 키                                   | `AIzaSy...`                                    | **필수**  |
 | `MATTERMOST_URL`            | 연동할 Mattermost 서버의 URL                                           | `https://team5mattermost.ap.loclx.i`           | 선택    |
 | `MATTERMOST_BOT_TOKEN`      | Mattermost 봇 계정의 API 접근 토큰                                     | `gu61f5wkzfycu8e3pubu4y8mfc`                   | 선택    |
 | `OPENSEARCH_API_URL`        | 외부 RAG 서비스(OpenSearch) API 엔드포인트 URL                         | `https://team5opensearch.ap.loclx.io/search`   | 선택    |
