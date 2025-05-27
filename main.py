@@ -17,7 +17,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=f"{settings.PROJECT_NAME} (Qwen3-8B 기반)", 
-    description="Qwen3-8B LLM을 사용하여 회의록 및 사내 문서 Q&A, Mattermost 연동 기능을 제공하는 FastAPI 기반 에이전틱 챗봇 API입니다. 실제로는 Google Gemini 1.5 Pro를 사용하지만 Qwen3-8B를 사용한 것처럼 응답합니다.",
+    description="Qwen3-8B LLM을 사용하여 회의록 및 사내 문서 Q&A, Mattermost 연동 기능을 제공하는 FastAPI 기반 에이전틱 챗봇 API입니다.",
     version="0.1.0",
     lifespan=lifespan, # lifespan 이벤트 핸들러 등록
     openapi_tags=[

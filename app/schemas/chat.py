@@ -56,16 +56,18 @@ class MeetingContext(BaseModel):
         hub_meeting_id (str, optional): 허브 회의 ID
         hub_meeting_title (str, optional): 허브 회의 제목
         hub_participant_names (List[str], optional): 허브 회의 참석자 이름 목록
-        hub_minutes_s3_url (str): 허브 회의록 S3 URL
+        hub_minutes_s3_url (str): 허브 회의록 S3 URL (필수)
     """
-    hub_meeting_id: Optional[str] = Field(None, description="허브 회의 ID")
-    hub_meeting_title: Optional[str] = Field(None, description="허브 회의 제목")
-    hub_participant_names: Optional[List[str]] = Field(None, description="허브 회의 참석자 이름 목록")
-    hub_minutes_s3_url: str = Field(..., description="허브 회의록 S3 URL")
+    hub_meeting_id: Optional[str] = Field(None, description="허브 회의 ID", example="hub_meeting_xyz789")
+    hub_meeting_title: Optional[str] = Field(None, description="허브 회의 제목", example="2024년 2분기 전략 회의")
+    hub_participant_names: Optional[List[str]] = Field(None, description="허브 회의 참석자 이름 목록", example=["김철수", "이영희", "박지성"])
+    hub_minutes_s3_url: str = Field(..., description="허브 회의록 S3 URL (필수 항목)", example="s3://my-bucket/minutes/meeting_xyz789.pdf")
 
 class ChatRequest(BaseModel):
     """
-    사용자 채팅 요청 모델입니다.
+    RAG 기반 채팅 스트리밍 엔드포인트에 대한 사용자 요청 모델입니다.
+    이 모델은 사용자의 질의와 함께 검색 범위, 세션 정보, 그리고 외부 시스템(예: 허브)에서 제공된
+    회의 관련 맥락 정보를 포함할 수 있습니다.
     
     Attributes:
         query (str): 사용자 질의 (필수)
