@@ -1,5 +1,5 @@
 # app/services/workflow_service.py: 애플리케이션의 핵심 워크플로우를 관리하는 서비스
-from app.schemas.chat import ChatRequest, LLMReasoningStep, RetrievedDocument, LLMResponseChunk, MessageType
+from app.schemas.chat import ChatRequest, LLMReasoningStep, RetrievedDocument, LLMResponseChunk, MessageType, MeetingContext
 from app.services import llm_service, mattermost_service as mm_service, db_service
 from app.services.external_rag_service import ExternalRAGService
 from app.services.chat_history_service import ChatHistoryService # 추가
@@ -14,6 +14,7 @@ import random
 from datetime import datetime
 from threading import Lock
 import json # json 임포트 추가
+import uuid
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +87,7 @@ class WorkflowService:
 
     async def process_chat_request_stream(self, request: ChatRequest, session_id: str) -> AsyncGenerator[str, None]:
         logger.info(f"[{session_id}] 스트리밍 채팅 요청 시작: {request.query}")
+        yield LLMResponseChunk(session_id=session_id, type=MessageType.START, data={"session_id": session_id})
 
         # 세션 기반 meeting_context 관리
         current_meeting_context: Optional[MeetingContext] = None
@@ -110,16 +112,24 @@ class WorkflowService:
         self.chat_history_service.add_message(session_id, "user", user_message)
 
         # 1. 사용자 의도 파악 (LLM 또는 키워드 기반)
-        intent_data = await self.llm_service.classify_intent(user_message) # 변경: llm_service 사용, session_id 제거 (llm_service.classify_intent는 session_id를 받지 않음)
-        intent = intent_data.get("intent", "unknown") # intent_data가 dict라고 가정
-        entities = intent_data.get("entities", {})    # 추출된 엔티티
+        intent_result = await self.llm_service.classify_intent(user_message) # 변경: llm_service 사용, session_id 제거 (llm_service.classify_intent는 session_id를 받지 않음)
+        intent = intent_result.get("intent", "unknown") # intent_data가 dict라고 가정
+        entities = intent_result.get("entities", {})    # 추출된 엔티티
 
-        yield self._format_sse_chunk(
+        yield LLMResponseChunk(
             session_id=session_id, 
             type=MessageType.INTENT_CLASSIFIED, 
-            content=None, 
             data={"intent": intent, "entities": entities, "description": f"사용자 의도를 '{intent}'로 파악했습니다."}
         )
+
+        # LLM 의도 분류의 추론 과정 스트리밍
+        if "reasoning_steps" in intent_result and intent_result["reasoning_steps"]:
+            for step in intent_result["reasoning_steps"]:
+                yield LLMResponseChunk(
+                    session_id=session_id,
+                    type=MessageType.LLM_REASONING_STEP,
+                    data=step # step은 LLMReasoningStep 모델과 호환되는 dict
+                )
 
         # 대화 기록 가져오기 (LLM 컨텍스트용)
         prompt_for_llm = user_message # LLM에 전달할 최종 프롬프트
@@ -127,89 +137,134 @@ class WorkflowService:
         if intent == "qna":
             # RAG 활성화 여부는 ChatRequest에 명시적인 필드가 없으므로, 'qna' 의도 자체를 RAG 시도 조건으로 간주합니다.
             # thinking step을 위한 search_params 유사 정보 구성
-            rag_params_for_thinking_step = {
+            rag_thinking_details = {
                 "search_in_meeting_documents_only": request.search_in_meeting_documents_only,
                 "target_document_ids": request.target_document_ids
             }
-            yield self._format_sse_chunk(
-                session_id=session_id, 
-                type=MessageType.THINKING, 
-                content=None, 
-                data={"step_description": "RAG 검색을 시작합니다.", "details": rag_params_for_thinking_step}
+            logger.info(f"[{session_id}] THINKING (RAG 검색 시작) details: {rag_thinking_details}")
+            yield LLMResponseChunk(
+                session_id=session_id,
+                type=MessageType.THINKING,
+                data={"step_description": "RAG 검색을 시작합니다."}
             )
+            retrieved_documents_for_llm: List[RetrievedDocument] = [] # UnboundLocalError 방지를 위해 여기서 초기화
             try:
-                search_type_for_rag = "related" if request.search_in_meeting_documents_only else "general"
+                # search_type_for_rag 변수는 ExternalRAGService.search_documents에서 직접 사용되지 않음.
+                # 대신 search_in_meeting_documents_only 플래그를 직접 전달함.
                 documents_data = await self.external_rag_service.search_documents(
                     query=request.query,
-                    search_type=search_type_for_rag, # ChatRequest 필드 기반으로 search_type 설정
-                    document_ids=request.target_document_ids, # ChatRequest 필드 직접 사용
-                    user_id=None # ChatRequest에 user_id 없으므로 None 전달 (필요시 추가)
+                    search_in_meeting_only=request.search_in_meeting_documents_only, 
+                    document_ids=request.target_document_ids
                 )
                     
+                rag_search_complete_details = {"doc_count": len(documents_data) if documents_data else 0}
+                logger.info(f"[{session_id}] THINKING (RAG 검색 완료) details: {rag_search_complete_details}")
+                yield LLMResponseChunk(
+                    session_id=session_id,
+                    type=MessageType.THINKING,
+                    data={"step_description": f"RAG 검색 완료: {len(documents_data) if documents_data else 0}개 문서 수신"}
+                )
+
                 if documents_data:
-                    yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"RAG 검색 완료: {len(documents_data)}개 문서 수신", "details": {"doc_count": len(documents_data)}})
+                    # 관련성 점수 기반 필터링 (예: 0.7 이상)
+                    relevant_documents = [doc for doc in documents_data if doc.score >= 0.7]
+                    if relevant_documents:
+                        retrieved_documents_for_llm = relevant_documents[:5] # 최대 5개 사용
                         
-                    # 점수 기반 필터링 (0.7 이상)
-                    filtered_documents = [doc for doc in documents_data if doc.score >= 0.7]
-                        
-                    if not filtered_documents and documents_data:
-                         yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "수신된 모든 문서의 관련도 점수가 0.7 미만입니다. LLM은 일반 답변을 시도합니다.", "details": {"original_doc_count": len(documents_data)}})
-                    elif filtered_documents:
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"필터링 결과: {len(filtered_documents)}개 문서가 LLM 컨텍스트에 포함됩니다.", "details": {"filtered_doc_count": len(filtered_documents)}})
-                        for doc in filtered_documents:
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.RETRIEVED_DOCUMENT, content=None, data=doc.model_dump())
-                    retrieved_documents_for_llm = filtered_documents
-                    # LLM에 전달할 프롬프트 구성 시, 검색된 문서 내용을 포함 (필터링 된 것만)
-                    if retrieved_documents_for_llm:
-                        context_for_llm = "\n\n--- 참고 문서 ---\n"
-                        for i, doc_obj in enumerate(retrieved_documents_for_llm):
-                            context_for_llm += f"문서 {i+1} (ID: {doc_obj.document_id}, 점수: {doc_obj.score:.2f}):\n{doc_obj.text}\n\n"
-                        prompt_for_llm = f"{request.query}\n\n{context_for_llm}"
-                    # else: prompt_for_llm은 원래 request.query 유지
+                        retrieved_docs_info_details = {
+                            "original_doc_count": len(documents_data),
+                            "relevant_doc_count": len(relevant_documents),
+                            "used_doc_count": len(retrieved_documents_for_llm),
+                            "scores": [doc.score for doc in retrieved_documents_for_llm]
+                        }
+                        logger.info(f"[{session_id}] THINKING (관련 문서 필터링) details: {retrieved_docs_info_details}")
+                        yield LLMResponseChunk(
+                            session_id=session_id,
+                            type=MessageType.THINKING,
+                            data={"step_description": f"{len(retrieved_documents_for_llm)}개 관련 문서 사용"}
+                        )
+                        # 개별 문서 정보 스트리밍 (선택 사항, 현재는 비활성화)
+                        # for doc_to_stream in retrieved_documents_for_llm:
+                        #     yield LLMResponseChunk(session_id=session_id, type=MessageType.RETRIEVED_DOCUMENT, data=doc_to_stream.model_dump())
+                    
+                    elif not relevant_documents and documents_data: # 모든 문서가 0.7 미만인 경우
+                        low_score_details = {
+                            "original_doc_count": len(documents_data),
+                            "retrieved_document_scores": [doc.score for doc in documents_data]
+                        }
+                        logger.info(f"[{session_id}] THINKING (모든 문서 관련도 낮음) details: {low_score_details}")
+                        yield LLMResponseChunk(
+                            session_id=session_id,
+                            type=MessageType.THINKING,
+                            data={
+                                "step_description": f"수신된 모든 문서의 관련도 점수가 0.7 미만입니다. LLM은 일반 답변을 시도합니다.",
+                            }
+                        )
+                        retrieved_documents_for_llm = [] # LLM에 문서를 전달하지 않음
 
                 else: # documents_data is None or empty
-                    yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "RAG 검색 결과, 관련된 문서를 찾지 못했습니다. LLM이 일반 답변을 시도합니다.", "details": {}})
+                    logger.info(f"[{session_id}] THINKING (RAG 검색 결과 없음) details: None")
+                    yield LLMResponseChunk(
+                        session_id=session_id,
+                        type=MessageType.THINKING,
+                        data={"step_description": "RAG 검색 결과, 관련된 문서를 찾지 못했습니다. LLM이 일반 답변을 시도합니다.", "details": {}}
+                    )
 
             except Exception as e:
                 logger.error(f"[{session_id}] RAG 검색 중 오류: {e}", exc_info=True)
-                yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "RAG 문서 검색 중 오류가 발생했습니다.", "details": str(e)})
+                yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, data={"error": f"문서 검색 중 오류 발생: {e}"})
+                # 오류 발생 시에도 LLM이 일반 응답을 시도하도록 빈 리스트 유지
+                retrieved_documents_for_llm = [] 
 
-            # LLM 응답 스트리밍
-            yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "LLM 모델에 응답 생성을 요청합니다.", "details": {"query": request.query, "rag_docs_count": len(retrieved_documents_for_llm)}})
+            # LLM에 전달할 프롬프트 구성 시, 검색된 문서 내용을 포함 (필터링 된 것만)
+            if retrieved_documents_for_llm:
+                context_for_llm = "\n\n--- 참고 문서 ---\n"
+                for i, doc_obj in enumerate(retrieved_documents_for_llm):
+                    context_for_llm += f"문서 {i+1} (ID: {doc_obj.source_document_id}, 점수: {doc_obj.score:.2f}):\n{doc_obj.content_chunk}\n\n"
+                prompt_for_llm = f"{request.query}\n\n{context_for_llm}"
+            # else: prompt_for_llm은 원래 request.query 유지
+
+            llm_request_details = {
+                "query_length": len(prompt_for_llm),
+                "rag_docs_count": len(retrieved_documents_for_llm),
+                "history_length": len(conversation_history_for_llm)
+            }
+            logger.info(f"[{session_id}] THINKING (LLM 요청) details: {llm_request_details}") 
+            yield LLMResponseChunk(
+                session_id=session_id,
+                type=MessageType.THINKING,
+                data={"step_description": "LLM 모델에 응답 생성을 요청합니다."}
+            )
+
+            logger.info(f"[{session_id}] Handling QnA intent for query: '{request.query}'")
+            yield LLMResponseChunk(type=MessageType.THINKING, data={"step_description": "LLM에게 답변 생성 요청 중..."}, session_id=session_id)
             
-            try:
-                async for llm_text_chunk in self.llm_service.generate_response_stream(
-                    prompt=prompt_for_llm, 
-                    retrieved_chunks=[doc.text for doc in retrieved_documents_for_llm], # doc.text 사용
-                    conversation_history=conversation_history_for_llm
-                ):
-                    if isinstance(llm_text_chunk, str):
-                        if llm_text_chunk.startswith("LLM 오류:"):
-                            error_detail = llm_text_chunk[len("LLM 오류:"):].strip()
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "LLM 응답 생성 중 오류 발생", "details": error_detail})
-                            # LLM 오류 시 여기서 스트림을 중단할 수 있습니다. 예: return
-                        else:
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.CONTENT, content=None, data={"content": llm_text_chunk})
-                            # LLM 응답을 대화 기록에 추가 (모델 응답 부분만)
-                            # 주의: 스트리밍 중이라 완전한 응답이 아닐 수 있음. 마지막에 한번에 추가하거나, 토큰별로 누적 필요.
-                            # 여기서는 매 청크마다 기록하지 않고, 완료 후 전체 응답을 기록하는 것을 권장 (별도 로직 필요)
-                    else:
-                        logger.warning(f"[{session_id}] LLM 서비스로부터 예상치 못한 타입의 데이터 수신: {type(llm_text_chunk)}")
+            full_response = ""
+            # llm_service.generate_response_stream은 이제 str 또는 LLMReasoningStep을 반환
+            async for item in self.llm_service.generate_response_stream(
+                prompt=prompt_for_llm, 
+                retrieved_chunks=[doc.content_chunk for doc in retrieved_documents_for_llm], # content_chunk 문자열 리스트 전달
+                conversation_history=conversation_history_for_llm
+            ):
+                if isinstance(item, LLMReasoningStep):
+                    # LLM의 추론 단계 스트리밍
+                    yield LLMResponseChunk(
+                        type=MessageType.LLM_REASONING_STEP, 
+                        data=item.model_dump(), # Pydantic 모델을 dict로 변환
+                        session_id=session_id
+                    )
+                elif isinstance(item, str):
+                    # LLM의 실제 답변 내용 스트리밍
+                    yield LLMResponseChunk(type=MessageType.CONTENT, content=item, session_id=session_id)
+                    full_response += item
+                # 다른 타입의 객체가 올 경우를 대비한 로깅 (예상치 못한 상황)
+                elif item is not None:
+                    logger.warning(f"[{session_id}] Unexpected item type from generate_response_stream: {type(item)}")
 
-                # LLM 응답 스트리밍 완료 후 대화 기록 저장 (예시, 실제 구현은 더 정교해야 함)
-                # 이 시점에서는 llm_text_chunk가 마지막 조각일 뿐, 전체 응답이 아님.
-                # 전체 응답을 누적했다가 저장하는 로직이 필요.
-                # temp_full_response = "..." # 누적된 전체 응답
-                # self.chat_history_service.add_message(session_id, "assistant", temp_full_response)
-
-                yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "LLM 응답 생성이 완료되었습니다.", "details": {}})
-
-            except Exception as e:
-                logger.error(f"[{session_id}] LLM 스트리밍 처리 중 예외 발생: {e}", exc_info=True)
-                yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "LLM 응답 스트리밍 처리 중 예외가 발생했습니다.", "details": str(e)})
-
+            logger.info(f"[{session_id}] Full LLM QnA response: {full_response}")
+        
         elif intent == "send_mattermost_minutes":
-            yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "Mattermost 회의록 전송 처리를 시작합니다."})
+            yield LLMResponseChunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "Mattermost 회의록 전송 처리를 시작합니다."})
             logger.info(f"[{session_id}] Intent: send_mattermost_minutes")
 
             try:  # Outer try for the entire send_mattermost_minutes intent (catches e_main)
@@ -235,7 +290,7 @@ class WorkflowService:
                 # 2. S3 URL은 필수 - 없으면 진행 불가
                 if not minutes_s3_url:
                     logger.warning(f"[{session_id}] 회의록 S3 URL 정보가 없습니다. Mattermost 전송을 진행할 수 없습니다.")
-                    yield self._format_sse_chunk(
+                    yield LLMResponseChunk(
                         session_id=session_id, 
                         type=MessageType.ERROR, 
                         content=None, 
@@ -272,7 +327,7 @@ class WorkflowService:
                 # 5. 최종 수신자 확인 - 없으면 진행 불가
                 if not participant_names_for_db_query:
                     logger.warning(f"[{session_id}] Mattermost 전송 대상을 특정할 수 없습니다. (LLM 엔티티와 Hub 참여자 정보 모두 확인 후에도 대상 없음)")
-                    yield self._format_sse_chunk(
+                    yield LLMResponseChunk(
                         session_id=session_id, 
                         type=MessageType.ERROR, 
                         content=None, 
@@ -303,12 +358,12 @@ class WorkflowService:
                     except AttributeError as ae:
                         # get_mattermost_user_ids_by_names 함수가 db_service 모듈에 없는 경우
                         logger.error(f"[{session_id}] db_service 모듈에 get_mattermost_user_ids_by_names 함수가 정의되지 않았습니다: {ae}", exc_info=True)
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "내부 설정 오류: DB 서비스 기능 누락", "details": "Mattermost 사용자 ID 조회 기능을 사용할 수 없습니다."})
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "내부 설정 오류: DB 서비스 기능 누락", "details": "Mattermost 사용자 ID 조회 기능을 사용할 수 없습니다."})
                         # 이 경우, LLM이 추출한 ID만 사용하거나, 오류로 처리하고 중단할 수 있습니다.
                         # 여기서는 일단 LLM ID만으로 진행하도록 두거나, 혹은 바로 return하여 중단할 수 있습니다.
                     except Exception as e_db_query:
                         logger.error(f"[{session_id}] DB에서 Mattermost 사용자 ID 조회 중 예외 발생: {e_db_query}", exc_info=True)
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "DB 조회 중 오류가 발생했습니다.", "details": str(e_db_query)})
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=None, data={"error_message": "DB 조회 중 오류가 발생했습니다.", "details": str(e_db_query)})
                         # DB 오류 시, LLM이 추출한 ID만으로 진행할지, 아니면 전체 실패로 처리할지 결정 필요
                         # 여기서는 일단 LLM ID만으로 진행
                 else:
@@ -322,26 +377,26 @@ class WorkflowService:
                 try: # Inner try for sending messages (catches e_send)
                     if not final_target_user_ids and not final_target_channel_ids:
                         logger.warning(f"[{session_id}] Mattermost 전송 대상 사용자 또는 채널이 지정되지 않았습니다. 테스트 사용자에게 전송 시도합니다.")
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "전송 대상이 없어 테스트 사용자에게 전송 시도 중..."})
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": "전송 대상이 없어 테스트 사용자에게 전송 시도 중..."})
                         test_username = "@woorifisa1" # 메모리에서 가져온 테스트 사용자 이름
                         try:
                             test_user_id = await mm_service.find_mattermost_user_id(test_username)
                             if test_user_id:
                                 final_target_user_ids.append(test_user_id)
                                 logger.info(f"[{session_id}] 테스트 사용자 '{test_username}' (ID: {test_user_id})에게 전송합니다.")
-                                yield self._format_sse_chunk(session_id=session_id, type=MessageType.INFO, content=f"테스트 사용자 '{test_username}'에게 회의록 링크를 전송합니다.")
+                                yield LLMResponseChunk(session_id=session_id, type=MessageType.INFO, content=f"테스트 사용자 '{test_username}'에게 회의록 링크를 전송합니다.")
                             else:
                                 logger.error(f"[{session_id}] 테스트 사용자 '{test_username}'의 ID를 찾지 못했습니다.")
-                                yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=f"테스트 사용자 '{test_username}'을 찾을 수 없어 전송에 실패했습니다.")
+                                yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=f"테스트 사용자 '{test_username}'을 찾을 수 없어 전송에 실패했습니다.")
                                 # return # 여기서 바로 리턴할 수도 있음
                         except Exception as e_find_test_user:
                             logger.error(f"[{session_id}] 테스트 사용자 ID 조회 중 오류: {e_find_test_user}", exc_info=True)
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=f"테스트 사용자 조회 중 오류: {e_find_test_user}")
+                            yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=f"테스트 사용자 조회 중 오류: {e_find_test_user}")
                             # return
                         
                     if not final_target_user_ids and not final_target_channel_ids:
                         logger.error(f"[{session_id}] 최종적으로 전송할 대상이 없습니다.")
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content="Mattermost에 회의록을 전송할 대상(사용자 또는 채널)을 찾을 수 없습니다.")
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content="Mattermost에 회의록을 전송할 대상(사용자 또는 채널)을 찾을 수 없습니다.")
                         return # 전송 대상 없으면 여기서 종료
 
                     # 메시지 생성
@@ -354,24 +409,24 @@ class WorkflowService:
                     # 사용자에게 메시지 전송
                     for user_id in final_target_user_ids:
                         try:
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"사용자 ID '{user_id}'에게 메시지 전송 중..."})
+                            yield LLMResponseChunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"사용자 ID '{user_id}'에게 메시지 전송 중..."})
                             await mm_service.send_message_to_user(user_id=user_id, message=message_content)
                             logger.info(f"[{session_id}] 사용자 ID '{user_id}'에게 메시지 전송 성공")
                             sent_to_users_count += 1
                         except Exception as e_send_user:
                             logger.error(f"[{session_id}] 사용자 ID '{user_id}'에게 메시지 전송 실패: {e_send_user}", exc_info=True)
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=f"사용자 ID '{user_id}'에게 메시지 전송 중 오류: {e_send_user}")
+                            yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=f"사용자 ID '{user_id}'에게 메시지 전송 중 오류: {e_send_user}")
                         
                     # 채널에 메시지 전송
                     for channel_id in final_target_channel_ids:
                         try:
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"채널 ID '{channel_id}'에 메시지 전송 중..."})
+                            yield LLMResponseChunk(session_id=session_id, type=MessageType.THINKING, content=None, data={"step_description": f"채널 ID '{channel_id}'에 메시지 전송 중..."})
                             await mm_service.send_message_to_channel(channel_id=channel_id, message=message_content)
                             logger.info(f"[{session_id}] 채널 ID '{channel_id}'에 메시지 전송 성공")
                             sent_to_channels_count += 1
                         except Exception as e_send_channel:
                             logger.error(f"[{session_id}] 채널 ID '{channel_id}'에 메시지 전송 실패: {e_send_channel}", exc_info=True)
-                            yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=f"채널 ID '{channel_id}'에 메시지 전송 중 오류: {e_send_channel}")
+                            yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=f"채널 ID '{channel_id}'에 메시지 전송 중 오류: {e_send_channel}")
 
                     if sent_to_users_count > 0 or sent_to_channels_count > 0:
                         success_message = f"'{meeting_title}' 회의록 링크를 {sent_to_users_count}명의 사용자와 {sent_to_channels_count}개의 채널에 성공적으로 전송했습니다."
@@ -379,32 +434,32 @@ class WorkflowService:
                             success_message = "회의록 링크 전송을 시도했지만, 실제 전송된 대상이 없습니다."
                         
                         logger.info(f"[{session_id}] {success_message}")
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.RESULT, content=success_message, data={"meeting_title": meeting_title, "s3_link": minutes_s3_url, "users_sent": sent_to_users_count, "channels_sent": sent_to_channels_count})
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.RESULT, content=success_message, data={"meeting_title": meeting_title, "s3_link": minutes_s3_url, "users_sent": sent_to_users_count, "channels_sent": sent_to_channels_count})
                     else:
                         # 이 경우는 이미 위에서 처리되었어야 함 (no final_target_user_ids and not final_target_channel_ids)
                         # 하지만 만약 모든 전송 시도가 실패했다면
                         error_message = f"'{meeting_title}' 회의록 링크 전송에 실패했습니다. (대상: {len(final_target_user_ids)}명 사용자, {len(final_target_channel_ids)}개 채널)"
                         logger.error(f"[{session_id}] {error_message}")
-                        yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
+                        yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
                     
                     return # Inner try 성공 시 여기서 종료
 
                 except Exception as e_send: # Inner try의 exception (메시지 전송 중 오류)
                     error_message = f"Mattermost 메시지 전송 중 예기치 않은 오류 발생 (회의: {meeting_title}): {e_send}"
                     logger.error(f"[{session_id}] {error_message}", exc_info=True)
-                    yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
+                    yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
                     return # Inner try 실패 시 여기서 종료
 
             except Exception as e_main: # Outer try의 exception (전체 인텐트 처리 중 오류)
                 error_message = f"Mattermost 회의록 전송 처리 중 예기치 않은 오류 발생: {e_main}"
                 logger.error(f"[{session_id}] {error_message}", exc_info=True)
-                yield self._format_sse_chunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
+                yield LLMResponseChunk(session_id=session_id, type=MessageType.ERROR, content=error_message)
                 return # Outer try 실패 시 여기서 종료
         
         elif intent == "create_calendar_event":
             # TODO: 캘린더 이벤트 생성 로직 구현
             pass
-            yield self._format_sse_chunk(
+            yield LLMResponseChunk(
                 session_id=session_id, 
                 type=MessageType.INFO,
                 content=None, 

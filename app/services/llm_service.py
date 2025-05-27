@@ -6,7 +6,7 @@ import logging
 import asyncio
 from app.core.config import settings
 from app.schemas.chat import RetrievedDocument, LLMReasoningStep
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, AsyncGenerator, Union
 import json
 import re
 
@@ -158,11 +158,11 @@ JSON 형식:
             else:
                 return {"intent": "qna", "entities": default_entities, "reasoning_steps": reasoning_steps}
 
-    async def generate_response_stream(self, prompt: str, retrieved_chunks: list = None, conversation_history: list = None):
+    async def generate_response_stream(self, prompt: str, retrieved_chunks: list = None, conversation_history: list = None) -> AsyncGenerator[Union[str, LLMReasoningStep], None]:
         """
         Gemini API를 사용하여 프롬프트에 대한 응답을 스트리밍 방식으로 생성합니다.
         대화 맥락을 유지하기 위해 이전 대화 기록을 활용합니다.
-        이 메서드는 순수한 텍스트 조각들(raw text chunks)을 반환합니다.
+        이 메서드는 LLM의 추론 단계(LLMReasoningStep) 또는 순수한 텍스트 조각(str)을 반환합니다.
         
         Args:
             prompt (str): 사용자 질문
@@ -171,13 +171,10 @@ JSON 형식:
         """
         if not self.model:
             logger.error("LLM 모델이 초기화되지 않아 스트리밍을 시작할 수 없습니다.")
-            # 이 메서드는 이제 순수 텍스트 또는 예외를 발생시켜야 하므로, 직접 SSE 포맷된 오류 메시지를 반환하지 않습니다.
             # 호출하는 쪽에서 이 경우를 처리하거나, 여기서 특정 예외를 발생시킬 수 있습니다.
-            # 예: raise LLMNotInitializedError("LLM 서비스가 초기화되지 않았습니다.")
-            # 우선 빈 스트림을 반환하도록 두거나, 적절한 예외를 발생시킵니다.
             # 여기서는 간단히 빈 async generator로 만듭니다.
             if False: # 이 블록은 실행되지 않지만 async generator를 유지하기 위함
-                yield
+                yield "LLM 모델이 초기화되지 않았습니다."
             return
 
         try:
@@ -185,43 +182,89 @@ JSON 형식:
             if conversation_history:
                 gemini_chat_history_for_model.extend(conversation_history)
             
-            # 현재 사용자 질문 추가 (LLM 서비스의 책임으로 명확히 함)
-            current_user_message_parts = [{"text": prompt}]
+            # 시스템 메시지 (추론 과정 출력 요청 포함)
+            # Gemini는 명시적인 system role을 첫 번째 user 메시지에 합치거나, 튜닝된 모델을 사용해야 합니다.
+            # 여기서는 프롬프트 시작 부분에 지시사항을 추가합니다.
+            system_instruction = (
+                "당신은 친절하고 상세하게 답변하는 AI 어시스턴트입니다. "
+                "사용자의 질문에 답변할 때, 당신의 생각 과정을 단계별로 설명해주세요. "
+                "각 생각 단계는 반드시 `[THOUGHT]`로 시작하고 `[/THOUGHT]`로 끝나야 합니다. "
+                "예시: `[THOUGHT] 사용자의 질문 의도를 파악합니다. 질문은 X에 관한 것입니다. [/THOUGHT]` "
+                "최종 답변은 생각 단계를 제외하고 명확하게 전달해주세요."
+            )
+
+            current_user_message_parts_text = f"{system_instruction}\n\n사용자 질문: {prompt}"
+
             if retrieved_chunks:
-                context_text = "\n\n--- 참고 문서 조각 ---\n"
+                context_text = "\n\n--- 참고 문서 조각 ---"
                 for i, chunk_content in enumerate(retrieved_chunks):
-                    context_text += f"문서 {i+1}: {chunk_content}\n"
-                current_user_message_parts[0]["text"] += f"\n\n{context_text}"
+                    # content_chunk가 객체일 수 있으므로 문자열로 변환
+                    chunk_str = str(chunk_content.content_chunk if hasattr(chunk_content, 'content_chunk') else chunk_content)
+                    context_text += f"\n문서 {i+1}: {chunk_str}"
+                current_user_message_parts_text += f"{context_text}"
             
             gemini_chat_history_for_model.append({
                 "role": "user",
-                "parts": current_user_message_parts
+                "parts": [current_user_message_parts_text]
             })
 
-            # Google Gemini는 'system' 역할을 직접 지원하지 않으므로, 첫 번째 'user' 메시지에 시스템 지침을 포함하거나,
-            # 모델 자체에 전역적인 지침을 설정하는 방식을 사용합니다.
-            # 여기서는 별도의 시스템 지침 추가 로직은 제거하고, 프롬프트 자체에 명시적으로 포함하거나 모델 설정을 활용합니다.
+            # 이전 응답이 있다면 모델 역할로 추가 (Gemini는 user/model 턴을 번갈아 사용)
+            # 이 부분은 conversation_history가 이미 올바른 role을 가지고 있다고 가정합니다.
+            # 만약 마지막 메시지가 user였다면, LLM은 model로 응답해야 합니다.
+            # 여기서는 단순화를 위해 history가 올바르게 구성되었다고 가정합니다.
 
-            if gemini_chat_history_for_model:
-                response_stream = await self.model.generate_content_async(gemini_chat_history_for_model, stream=True)
-            else:
-                # 대화 기록이 전혀 없는 극단적인 경우 (실제로는 거의 없음, 최소한 현재 프롬프트는 있어야 함)
-                response_stream = await self.model.generate_content_async(prompt, stream=True)
+            chat_session = self.model.start_chat(history=gemini_chat_history_for_model)
+            
+            logger.debug(f"Sending prompt to Gemini for QnA: {current_user_message_parts_text}")
+            logger.debug(f"Gemini chat history for QnA: {gemini_chat_history_for_model}")
 
+            # 스트리밍 응답 요청
+            # Gemini API는 send_message_async를 사용하고, response.stream = True 설정이 필요할 수 있습니다.
+            # google-generativeai 라이브러리는 기본적으로 stream=True로 동작하는 경우가 많습니다.
+            # 여기서는 response.text가 아닌, response 객체를 순회하며 청크를 받습니다.
+            response_stream = await chat_session.send_message_async(current_user_message_parts_text, stream=True)
+
+            buffer = ""
             async for chunk in response_stream:
-                if chunk.parts:
-                    yield chunk.text # 순수 텍스트 반환
-                # API 응답 속도에 맞춰 너무 빠르게 전송되지 않도록 약간의 지연을 줄 수 있습니다.
-                # await asyncio.sleep(0.01) # 실제 운영 환경에서는 제거하거나 조절
-        
+                if not chunk.parts:
+                    continue
+                chunk_text = chunk.parts[0].text
+                buffer += chunk_text
+
+                # [THOUGHT] ... [/THOUGHT] 패턴 처리
+                while True:
+                    start_tag_index = buffer.find("[THOUGHT]")
+                    if start_tag_index == -1:
+                        break # 시작 태그 없음
+
+                    # 시작 태그 이전의 텍스트가 있다면 일반 텍스트로 yield
+                    if start_tag_index > 0:
+                        yield buffer[:start_tag_index]
+                        buffer = buffer[start_tag_index:]
+                        start_tag_index = 0 # 버퍼가 업데이트되었으므로 인덱스 재설정
+                    
+                    end_tag_index = buffer.find("[/THOUGHT]", start_tag_index)
+                    if end_tag_index == -1:
+                        # 종료 태그가 아직 도착하지 않음, 다음 청크 대기
+                        break
+                    
+                    # [THOUGHT]와 [/THOUGHT] 사이의 내용 추출
+                    thought_content = buffer[start_tag_index + len("[THOUGHT]"):end_tag_index].strip()
+                    yield LLMReasoningStep(step_description=thought_content) # LLMReasoningStep 객체 yield
+                    
+                    # 처리된 부분 버퍼에서 제거
+                    buffer = buffer[end_tag_index + len("[/THOUGHT]"):]
+
+            # 스트림 종료 후 남은 버퍼 내용 처리
+            if buffer:
+                yield buffer
+
         except Exception as e:
-            logger.error(f"LLM 스트리밍 중 오류 발생: {e}", exc_info=True)
-            # 여기서 예외를 다시 발생시켜 호출자가 처리하도록 합니다.
-            # 예: raise LLMGenerationError(f"LLM 응답 생성 중 오류: {e}") from e
-            # 또는 특정 오류 메시지를 yield 할 수 있지만, 순수 텍스트 스트림 컨셉에는 맞지 않습니다.
-            # 호출하는 서비스(WorkflowService)에서 이 예외를 잡아서 적절한 SSE 오류 이벤트를 생성해야 합니다.
-            # 임시로 오류 메시지 자체를 텍스트로 반환 (WorkflowService에서 이를 오류로 인지하고 처리해야 함)
-            yield f"LLM 오류: {str(e)}" # 이 방식은 좋지 않지만, 큰 변경 없이 임시 처리
+            error_message = f"Error during Gemini stream generation: {e}"
+            logger.error(error_message, exc_info=True)
+            # 오류 발생 시 LLMReasoningStep 또는 텍스트로 오류 알림
+            yield LLMReasoningStep(step_description="LLM 응답 생성 중 오류 발생", details={"error": str(e)})
+            yield f"오류: {error_message}"
 
     async def rewrite_query(self, original_query: str) -> str:
         """
