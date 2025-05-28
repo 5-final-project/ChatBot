@@ -30,6 +30,7 @@
 *   **컨테이너화:** Docker, Docker Compose
 *   **CI/CD (기본 구성):** [entrypoint.sh](cci:7://file:///c:/ITStudy/CHAT/entrypoint.sh:0:0-0:0) 내 `pytest` 실행
 
+```
 ## 3. 디렉토리 구조
 c:\ITStudy\CHAT 
 ├── .env # (Git 무시) 실제 환경 변수 설정 파일 
@@ -50,8 +51,7 @@ c:\ITStudy\CHAT
 │ ├── routers/ # API 엔드포인트(라우트) 정의 
 │ │ ├── init.py 
 │ │ └── chat.py # 채팅 관련 API 라우터 (/api/v1/chat/rag/stream) │ ├── schemas/ # Pydantic 스키마 (API 요청/응답 데이터 모델) │ │ ├── init.py │ │ └── chat.py # ChatRequest, LLMResponseChunk 등 정의 │ └── services/ # 비즈니스 로직 (핵심 기능 구현) │ ├── init.py │ ├── chat_history_service.py # 대화 기록 관리 서비스 │ ├── db_service.py # 데이터베이스 연동 서비스 (사용자 정보 등) │ ├── external_rag_service.py # 외부 RAG 서비스(OpenSearch) 연동 │ ├── llm_service.py # LLM(Gemini) API 연동 및 응답 생성 │ ├── mattermost_service.py # Mattermost API 연동 │ └── workflow_service.py # 전체 요청 처리 흐름(오케스트레이션) 관리 ├── data/ # (예시) 초기 데이터, 임시 파일 등 (현재는 비어있음) ├── docker-compose.yml # Docker Compose 설정 (서비스 실행 환경 정의) ├── entrypoint.sh # Docker 컨테이너 시작 시 실행되는 스크립트 ├── logs/ # (예시) 애플리케이션 로그 저장 디렉토리 ├── main.py # FastAPI 애플리케이션의 주 진입점 ├── manage_mattermost_users.py # Mattermost 사용자 관리 및 DB 동기화 스크립트 └── requirements.txt # Python 의존성 패키지 목록
-
-CopyInsert
+```
 
 ## 4. 주요 파일 및 모듈 상세 설명
 
