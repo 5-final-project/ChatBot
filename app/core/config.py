@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Agentic Chatbot API"
 
     # 외부 RAG 서비스 URL
-    EXTERNAL_RAG_SERVICE_URL: Optional[str] = os.getenv("EXTERNAL_RAG_SERVICE_URL", "https://wxy6ptclkd.ap") # 기본 URL 업데이트
+    EXTERNAL_RAG_SERVICE_URL: Optional[str] = os.getenv("EXTERNAL_RAG_SERVICE_URL", "https://team5opensearch.ap.loclx.io ") # 기본 URL 업데이트
 
     # 애플리케이션 디버깅 설정
-    DEBUG: bool = False
+    DEBUG: bool = True
 
     # .env 파일 경로 설정
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8', extra='ignore')

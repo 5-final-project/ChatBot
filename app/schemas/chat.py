@@ -20,6 +20,7 @@ class MessageType(str, Enum):
     INTENT_CLASSIFIED = "intent_classified" # 의도 분류 결과
     TASK_COMPLETE = "task_complete" # 특정 작업 완료 (예: Mattermost 전송 완료)
     RESULT = "result"  # 최종 결과 메시지 (예: Mattermost 전송 성공/실패 요약)
+    WARNING = "warning"  # 경고 메시지
 
 class LLMResponseChunk(BaseModel):
     """

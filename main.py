@@ -1,19 +1,28 @@
 # main.py: FastAPI 애플리케이션의 메인 진입점 파일
+import logging # logging 임포트 추가
 from fastapi import FastAPI
 from app.routers import chat as chat_router # chat 라우터 import
 from app.core.config import settings # 설정 import (prefix 등에 활용 가능)
-from app.services.workflow_service import workflow_manager # workflow_manager 임포트
+from app.services.workflow.workflow_manager import workflow_manager # workflow_manager 임포트
 from contextlib import asynccontextmanager # asynccontextmanager 임포트
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 애플리케이션 시작 시 실행
-    print("애플리케이션 시작 - DB 초기화 시도...")
-    await workflow_manager.async_initialize_db()
-    print("DB 초기화 로직 완료.")
+    # 기본 로깅 설정 (레벨 INFO 이상)
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__) # logger 인스턴스 생성
+
+    logger.info("애플리케이션 시작 - DB 초기화 시도 직전 (main.py lifespan)")
+    db_init_success = await workflow_manager.async_initialize_db()
+    if db_init_success:
+        logger.info("DB 초기화 성공 (main.py lifespan)")
+    else:
+        logger.error("DB 초기화 실패 (main.py lifespan)")
+    logger.info("DB 초기화 로직 완료 후 (main.py lifespan)")
     yield
     # 애플리케이션 종료 시 실행 (필요한 경우)
-    print("애플리케이션 종료")
+    logger.info("애플리케이션 종료 (main.py lifespan)")
 
 app = FastAPI(
     title=f"{settings.PROJECT_NAME} (Qwen3-8B 기반)", 

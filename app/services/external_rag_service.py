@@ -15,7 +15,9 @@ class ExternalRAGService:
         self.base_url = os.environ.get("OPENSEARCH_API_URL", "https://team5opensearch.ap.loclx.io")
         self.timeout = 30.0  # 요청 타임아웃 설정 (초)
         self.search_endpoint = "/search/hybrid-reranked"  # 하이브리드 검색 엔드포인트
-        logger.info(f"오픈서치 API URL 설정: {self.base_url}")
+        # TODO: 실제 사용할 OpenSearch 인덱스 이름을 설정에서 가져오거나 상수로 정의하는 것을 고려
+        self.default_search_indices = ["documents"] # 기본 검색 인덱스
+        logger.info(f"오픈서치 API URL 설정: {self.base_url}, 기본 검색 인덱스: {self.default_search_indices}")
 
     async def search_documents(
         self,
@@ -44,7 +46,8 @@ class ExternalRAGService:
         # 하이브리드 검색 요청 페이로드 구성
         payload = {
             "query": query,
-            "top_k": top_k
+            "top_k": top_k,
+            "indices": ["master_documents"]
         }
         
         # document_ids가 있는 경우 필터링 정보 추가 (오픈서치 API가 지원하는 경우)
@@ -53,16 +56,16 @@ class ExternalRAGService:
             logger.info(f"특정 문서 ID 필터 추가: {document_ids}")
         
         # 회의록 관련 검색 필터 추가 (오픈서치 API가 지원하는 경우)
-        if search_in_meeting_only:
-            if "filter" not in payload:
-                payload["filter"] = {}
-            payload["filter"]["document_type"] = "meeting"  # 회의록 문서 타입
-            logger.info("회의록 문서만 검색하도록 필터 추가")
+        # if search_in_meeting_only:
+        #     if "filter" not in payload:
+        #         payload["filter"] = {}
+        #     payload["filter"]["document_type"] = "meeting"  # 회의록 문서 타입
+        #     logger.info("회의록 문서만 검색하도록 필터 추가")
 
         # 요청 URL 구성
         request_url = f"{self.base_url}{self.search_endpoint}"
         
-        logger.info(f"오픈서치 API 검색 요청: URL='{request_url}', 질의='{query}', 결과수={top_k}")
+        logger.info(f"오픈서치 API 검색 요청: URL='{request_url}', 질의='{query}', 결과수={top_k}, 인덱스={payload['indices']}")
         logger.debug(f"요청 페이로드: {json.dumps(payload, ensure_ascii=False)}")
 
         try:
@@ -109,7 +112,7 @@ class ExternalRAGService:
         except httpx.HTTPStatusError as e:
             logger.error(f"오픈서치 API HTTP 오류: {e.response.status_code} - {e.response.text[:500]}...")
         except httpx.RequestError as e:
-            logger.error(f"오픈서치 API 요청 오류: {e}")
+            logger.error(f"오픈서치 API 요청 오류: {type(e).__name__} - {e}") 
         except json.JSONDecodeError as e:
             logger.error(f"오픈서치 API 응답 JSON 디코딩 오류: {e}. 위치: {e.lineno}:{e.colno}")
         except Exception as e:

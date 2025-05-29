@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
+from sse_starlette.sse import EventSourceResponse
 from app.schemas.chat import ChatRequest, LLMResponseChunk, MessageType, LLMReasoningStep, RetrievedDocument
-from app.services.workflow_service import workflow_manager 
+from app.services.workflow.workflow_manager import workflow_manager 
 from app.core.config import settings
 import json
 import logging
@@ -49,33 +50,209 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
     }
 })): 
     async def event_generator():
-        session_id = request_data.session_id or f"sess_{int(time.time())}" 
+        # LLM 추론 및 답변 관련 타입만 필터링하기 위한 집합
+        allowed_types = {
+            MessageType.LLM_REASONING_STEP.value,
+            MessageType.CONTENT.value,
+            MessageType.ERROR.value, # 오류 상황 전파
+            MessageType.END.value, # 스트림 종료 전파
+            MessageType.WARNING.value, # 경고 메시지
+            MessageType.TASK_COMPLETE.value, # 작업 완료
+            MessageType.RESULT.value # 결과 메시지
+        }
+        
+        # 의도 분류 및 엔티티 추출 관련 메시지 필터링을 위한 불필요한 step_description 목록
+        filtered_reasoning_steps = {
+            "Intent classification and entity extraction prompt prepared",
+            "LLM raw response for intent/entity",
+            "LLM response parsed successfully"
+        }
+        
+        # 마지막 end 이벤트만 전송하기 위한 플래그
+        sent_end_event = False
+        
+        # 콘텐츠 축적을 위한 변수
+        accumulated_content = ""
+        last_content_time = time.time()
+        CONTENT_CHUNK_SIZE = 30  # 적절한 크기로 조정 (문자 수, 공백 포함)
+        CONTENT_MAX_DELAY = 0.3  # 최대 지연 시간 (초)
+        
         try:
-            async for chunk_obj in workflow_manager.process_chat_request_stream(request_data, session_id): 
-                if isinstance(chunk_obj, LLMResponseChunk):
-                    sse_event = f"data: {chunk_obj.model_dump_json(exclude_none=True)}\n\n"
-                    yield sse_event
-                else:
-                    logger.warning(f"Unexpected chunk type from workflow: {type(chunk_obj)}. Attempting to serialize as string.")
-                    try:
-                        unknown_data = {"type": "unknown", "content": str(chunk_obj)}
-                        sse_event = f"data: {json.dumps(unknown_data)}\n\n"
-                        yield sse_event
-                    except Exception as serialization_error:
-                        logger.error(f"Could not serialize unknown chunk: {serialization_error}")
-                        error_response_chunk = LLMResponseChunk(
-                            session_id=session_id,
-                            type=MessageType.ERROR,
-                            data={"error": f"스트리밍 중 예기치 않은 데이터 타입 직렬화 오류: {serialization_error}"}
+            # 세션 ID가 없는 경우 기본값 설정
+            session_id = request_data.session_id or f"sess_{int(time.time())}"
+            
+            # process_chat_request_stream 메서드 호출 - 이미 포맷된 SSE 문자열을 반환함
+            async for sse_chunk in workflow_manager.process_chat_request_stream(request_data, session_id):
+                # ping 메시지 제거
+                if not sse_chunk.startswith('data: '):
+                    continue
+                    
+                # SSE 형식에서 데이터 부분만 추출
+                json_str = sse_chunk[6:]  # 'data: ' 부분 제거
+                try:
+                    chunk_data = json.loads(json_str)
+                    current_type = chunk_data.get('type')
+                    
+                    # 중복 end 이벤트 제거 (워크플로우 매니저가 보낸 end 이벤트는 무시)
+                    if current_type == MessageType.END.value:
+                        continue
+                    
+                    # LLM 추론 과정 메시지 필터링 (의도 분류 관련 불필요한 추론 단계 제거)
+                    if (current_type == MessageType.LLM_REASONING_STEP.value and 
+                        'step_description' in chunk_data.get('data', {}) and
+                        chunk_data['data']['step_description'] in filtered_reasoning_steps):
+                        continue
+                    
+                    # 일반 콘텐츠 처리 (CONTENT 타입)
+                    if current_type == MessageType.CONTENT.value:
+                        content = chunk_data.get('content', '')
+                        if not content:
+                            content = chunk_data.get('data', {}).get('content', '')
+                        
+                        # 내용이 없는 경우 스킵
+                        if not content:
+                            continue
+                        
+                        # 일반 콘텐츠 축적 (공백 포함 모든 문자 보존)
+                        accumulated_content += content
+                        current_time = time.time()
+                        
+                        # 일정 크기 이상이거나 일정 시간이 지났을 때만 전송
+                        if (len(accumulated_content) >= CONTENT_CHUNK_SIZE or
+                            current_time - last_content_time >= CONTENT_MAX_DELAY):
+                            
+                            event_data = {
+                                'type': current_type,
+                                'data': {},
+                                'content': accumulated_content
+                            }
+                            
+                            # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                            json_data = json.dumps(
+                                event_data, 
+                                ensure_ascii=False,
+                                separators=(',', ':')
+                            )
+                            
+                            # 즉시 yield - 원본 SSE 형식으로 전송
+                            yield f"data: {json_data}\n\n"
+                            
+                            # 초기화
+                            accumulated_content = ""
+                            last_content_time = current_time
+                    
+                    # LLM 추론 과정 메시지는 그대로 전달 (LLM_REASONING_STEP 타입)
+                    elif current_type == MessageType.LLM_REASONING_STEP.value:
+                        # 추론 과정은 그대로 전달 (타임스탬프 제거)
+                        event_data = {
+                            'type': current_type,
+                            'data': {
+                                'step_description': chunk_data.get('data', {}).get('step_description', ''),
+                                'details': chunk_data.get('data', {}).get('details', {})
+                            }
+                        }
+                        
+                        # content 필드가 있으면 event_data에 포함
+                        if 'content' in chunk_data and chunk_data['content']:
+                            if chunk_data['content'].strip():
+                                event_data['content'] = chunk_data['content']
+                        
+                        # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                        json_data = json.dumps(
+                            event_data, 
+                            ensure_ascii=False,
+                            separators=(',', ':')
                         )
-                        yield f"data: {error_response_chunk.model_dump_json(exclude_none=True)}\n\n"
-
+                        
+                        # 즉시 yield - 원본 SSE 형식으로 전송
+                        yield f"data: {json_data}\n\n"
+                    
+                    # 에러 메시지 등 다른 타입은 타임스탬프 없이 전달
+                    elif current_type in allowed_types:
+                        event_data = {
+                            'type': current_type,
+                            'data': chunk_data.get('data', {})
+                        }
+                        
+                        # 타임스탬프 제거
+                        if 'timestamp' in event_data['data']:
+                            del event_data['data']['timestamp']
+                        
+                        # content 필드가 있으면 event_data에 포함
+                        if 'content' in chunk_data and chunk_data['content']:
+                            if chunk_data['content'].strip():
+                                event_data['content'] = chunk_data['content']
+                        
+                        # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                        json_data = json.dumps(
+                            event_data, 
+                            ensure_ascii=False,
+                            separators=(',', ':')
+                        )
+                        
+                        # 즉시 yield - 원본 SSE 형식으로 전송
+                        yield f"data: {json_data}\n\n"
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON 파싱 오류: {e}, 원본 데이터: {json_str}")
+                
         except Exception as e:
-            logger.error(f"Error in RAG streaming (session: {session_id}): {str(e)}", exc_info=True)
-            error_response_chunk = LLMResponseChunk(
-                session_id=session_id,
-                type=MessageType.ERROR,
-                data={"error": f"스트리밍 중 내부 서버 오류 발생: {str(e)}"}
+            logger.error(f"Error during chat streaming: {e}", exc_info=True)
+            error_event = {
+                'type': MessageType.ERROR.value,
+                'data': {'message': str(e), 'is_final': True}
+            }
+            
+            # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+            json_data = json.dumps(
+                error_event, 
+                ensure_ascii=False,
+                separators=(',', ':')
             )
-            yield f"data: {error_response_chunk.model_dump_json(exclude_none=True)}\n\n"
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+            
+            yield f"data: {json_data}\n\n"
+        finally:
+            # 남아있는 콘텐츠가 있으면 전송
+            if accumulated_content:
+                event_data = {
+                    'type': MessageType.CONTENT.value,
+                    'data': {},
+                    'content': accumulated_content
+                }
+                
+                # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                json_data = json.dumps(
+                    event_data, 
+                    ensure_ascii=False,
+                    separators=(',', ':')
+                )
+                
+                yield f"data: {json_data}\n\n"
+            
+            # 단 한 번의 end 이벤트만 전송
+            if not sent_end_event:
+                end_event = {
+                    'type': MessageType.END.value,
+                    'data': {'message': 'Stream ended', 'is_final': True}
+                }
+                
+                # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                json_data = json.dumps(
+                    end_event, 
+                    ensure_ascii=False,
+                    separators=(',', ':')
+                )
+                
+                yield f"data: {json_data}\n\n"
+                sent_end_event = True
+    
+    # sse_starlette 대신 직접 StreamingResponse 사용
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )

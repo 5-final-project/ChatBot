@@ -1,4 +1,5 @@
-fastapi
+fastapi>=0.100.0
+sse-starlette>=1.6.5 # Server-Sent Events 스트리밍을 위한 패키지
 uvicorn[standard]
 pydantic
 pydantic-settings
