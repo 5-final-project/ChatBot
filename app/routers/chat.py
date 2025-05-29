@@ -77,14 +77,19 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
         CONTENT_CHUNK_SIZE = 30  # 적절한 크기로 조정 (문자 수, 공백 포함)
         CONTENT_MAX_DELAY = 0.3  # 최대 지연 시간 (초)
         
+        # 응답 내용 존재 여부 추적
+        received_any_content = False
+        
         try:
             # 세션 ID가 없는 경우 기본값 설정
             session_id = request_data.session_id or f"sess_{int(time.time())}"
+            logger.info(f"스트리밍 채팅 시작: session_id={session_id}, query='{request_data.query[:30]}...'")
             
             # process_chat_request_stream 메서드 호출 - 이미 포맷된 SSE 문자열을 반환함
             async for sse_chunk in workflow_manager.process_chat_request_stream(request_data, session_id):
                 # ping 메시지 제거
                 if not sse_chunk.startswith('data: '):
+                    logger.debug(f"ping 메시지 스킵: {sse_chunk[:20]}...")
                     continue
                     
                 # SSE 형식에서 데이터 부분만 추출
@@ -92,6 +97,17 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                 try:
                     chunk_data = json.loads(json_str)
                     current_type = chunk_data.get('type')
+                    
+                    # 디버그 로깅
+                    if current_type == MessageType.CONTENT.value:
+                        content_preview = chunk_data.get('content', '')[:20]
+                        logger.debug(f"CONTENT 청크 수신: '{content_preview}...'")
+                        received_any_content = True
+                    elif current_type == MessageType.LLM_REASONING_STEP.value:
+                        logger.debug(f"LLM_REASONING_STEP 청크 수신")
+                        received_any_content = True
+                    else:
+                        logger.debug(f"기타 청크 수신: type={current_type}")
                     
                     # 중복 end 이벤트 제거 (워크플로우 매니저가 보낸 end 이벤트는 무시)
                     if current_type == MessageType.END.value:
@@ -111,6 +127,7 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                         
                         # 내용이 없는 경우 스킵
                         if not content:
+                            logger.debug("빈 콘텐츠 스킵")
                             continue
                         
                         # 일반 콘텐츠 축적 (공백 포함 모든 문자 보존)
@@ -196,6 +213,22 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON 파싱 오류: {e}, 원본 데이터: {json_str}")
                 
+            # 응답 체크
+            if not received_any_content:
+                logger.warning(f"세션 {session_id}에서 콘텐츠 응답이 생성되지 않았습니다.")
+                default_message = "죄송합니다. 현재 응답을 생성할 수 없습니다. 다시 질문해 주세요."
+                event_data = {
+                    'type': MessageType.CONTENT.value,
+                    'data': {},
+                    'content': default_message
+                }
+                json_data = json.dumps(
+                    event_data, 
+                    ensure_ascii=False,
+                    separators=(',', ':')
+                )
+                yield f"data: {json_data}\n\n"
+                
         except Exception as e:
             logger.error(f"Error during chat streaming: {e}", exc_info=True)
             error_event = {
@@ -245,6 +278,7 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                 
                 yield f"data: {json_data}\n\n"
                 sent_end_event = True
+                logger.info(f"스트리밍 응답 종료: session_id={session_id}")
     
     # sse_starlette 대신 직접 StreamingResponse 사용
     return StreamingResponse(

@@ -84,8 +84,36 @@ class LLMCore:
             return None
         
         try:
+            # 대화 기록 유효성 검사 및 필터링
             if history is None:
                 history = []
+            else:
+                # 빈 메시지 필터링
+                filtered_history = []
+                for entry in history:
+                    # 'parts' 필드가 있고, 첫 번째 파트에 'text'가 있는지 확인
+                    if 'parts' in entry and entry['parts'] and 'text' in entry['parts'][0]:
+                        text = entry['parts'][0]['text']
+                        # 빈 텍스트가 아닌 경우만 추가
+                        if text and text.strip():
+                            filtered_history.append(entry)
+                        else:
+                            logger.warning(f"대화 기록에서 빈 메시지 필터링: {entry}")
+                    # content 필드를 사용하는 경우 처리
+                    elif 'content' in entry and entry['content']:
+                        text = entry['content']
+                        if text and text.strip():
+                            # Gemini 형식으로 변환
+                            filtered_entry = {
+                                "role": entry.get("role", "user"),
+                                "parts": [{"text": text}]
+                            }
+                            filtered_history.append(filtered_entry)
+                        else:
+                            logger.warning(f"대화 기록에서 빈 content 필터링: {entry}")
+                history = filtered_history
+                
+            logger.info(f"채팅 세션 생성: 대화 기록 {len(history)}개 메시지")
             return self.model.start_chat(history=history)
         except Exception as e:
             logger.error(f"채팅 세션 생성 중 오류 발생: {e}")

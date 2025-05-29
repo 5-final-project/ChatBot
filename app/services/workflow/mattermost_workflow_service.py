@@ -56,11 +56,11 @@ class MattermostWorkflowService:
         message_tokens = ["회의록", " 전송", " 준비", " 중입니다", "..."]
         for token in message_tokens:
             current_content += token
-            yield LLMResponseChunk(
-                session_id=session_id,
+        yield LLMResponseChunk(
+            session_id=session_id,
                 type=MessageType.CONTENT,
                 content=token
-            )
+        )
         
         # 회의 컨텍스트 확인
         meeting_context = request.meeting_context
@@ -126,7 +126,7 @@ class MattermostWorkflowService:
                 participant_names = meeting_context.hub_participant_names
                 logger.info(f"[{session_id}] 참가자 목록 그대로 사용: {participant_names}")
         
-        # 대상 사용자가 없는 경우 경고 메시지 출력
+        # 대상 사용자가 없는 경우 경고 메시지 출력        
         if not participant_names:
             # 토큰 단위로 경고 메시지 스트리밍
             warning_message = "\n\n회의 참가자 정보가 없습니다. 회의록 전송을 위해서는 참가자 정보가 필요합니다."
@@ -184,11 +184,11 @@ class MattermostWorkflowService:
                 progress_message = f"\n\n사용자 '{participant_name}'에게 회의록 전송 중..."
                 for token in progress_message.split():
                     current_content += " " + token
-                    yield LLMResponseChunk(
-                        session_id=session_id,
+                yield LLMResponseChunk(
+                    session_id=session_id,
                         type=MessageType.CONTENT,
                         content=" " + token
-                    )
+                )
                 
                 # 사용자 Mattermost ID 확인 (DB 매핑 서비스를 우선 활용)
                 mattermost_id = None
@@ -250,11 +250,11 @@ class MattermostWorkflowService:
                 failed_message = f"\n\n다음 참가자에게 전송하지 못했습니다: {failed_names}"
                 for token in failed_message.split():
                     current_content += " " + token
-                    yield LLMResponseChunk(
-                        session_id=session_id,
+                yield LLMResponseChunk(
+                    session_id=session_id,
                         type=MessageType.CONTENT,
                         content=" " + token
-                    )
+                )
             
             # 최종 결과 메시지
             if success_count > 0:

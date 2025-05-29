@@ -91,6 +91,10 @@ class SessionService:
             session_id (str): 세션 ID
             message (str): 사용자 메시지
         """
+        if not message or not message.strip():
+            logger.warning(f"[{session_id}] 빈 사용자 메시지 추가 시도 무시")
+            return
+            
         self.chat_history_service.add_message(session_id, "user", message)
         logger.info(f"[{session_id}] 사용자 메시지 기록됨: {message[:50]}{'...' if len(message) > 50 else ''}")
     
@@ -102,6 +106,10 @@ class SessionService:
             session_id (str): 세션 ID
             message (str): 어시스턴트 메시지
         """
+        if not message or not message.strip():
+            logger.warning(f"[{session_id}] 빈 어시스턴트 메시지 추가 시도 무시")
+            return
+            
         self.chat_history_service.add_message(session_id, "assistant", message)
         logger.info(f"[{session_id}] 어시스턴트 메시지 기록됨: {message[:50]}{'...' if len(message) > 50 else ''}")
     

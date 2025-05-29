@@ -29,6 +29,10 @@ class ChatHistoryService:
         'role'은 'user', 'assistant', 'system' 등이 될 수 있습니다.
         kwargs를 통해 추가적인 메타데이터(예: timestamp, message_id)를 저장할 수 있습니다.
         """
+        # 빈 메시지는 추가하지 않음
+        if not content or not content.strip():
+            return
+            
         if session_id not in self.conversation_history:
             self.conversation_history[session_id] = []
         

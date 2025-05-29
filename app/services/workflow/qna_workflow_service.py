@@ -124,10 +124,22 @@ class QnAWorkflowService:
         conversation_history_for_llm = []
         
         for entry in conversation_history:
-            conversation_history_for_llm.append({
-                "role": entry["role"], 
-                "parts": [{"text": entry["content"]}]
-            })
+            # 빈 메시지 필터링
+            if entry.get("content") and entry.get("content").strip():
+                conversation_history_for_llm.append({
+                    "role": entry["role"], 
+                    "content": entry["content"]  # Gemini 형식에 맞게 수정
+                })
+            else:
+                logger.warning(f"[{session_id}] 빈 메시지 필터링: {entry}")
+        
+        # 현재 쿼리를 대화 기록에 추가
+        if request.query and request.query.strip():
+            # 현재 쿼리를 대화 기록에 미리 추가 (이중 추가 방지 위해 여기서만 추가)
+            self.chat_history_service.add_message(session_id, "user", request.query)
+            logger.info(f"[{session_id}] 현재 쿼리를 대화 기록에 추가: {request.query[:50]}{'...' if len(request.query) > 50 else ''}")
+        
+        logger.info(f"[{session_id}] 대화 기록 {len(conversation_history_for_llm)}개 메시지 변환 완료")
         
         # LLM으로 응답 생성
         logger.info(f"[{session_id}] LLM 응답 생성 시작")
@@ -135,6 +147,7 @@ class QnAWorkflowService:
         try:
             # LLM 스트리밍 응답 생성
             current_content = ""
+            received_any_content = False
             
             async for content_chunk in self.llm_service.generate_response_stream(
                 prompt=request.query,
@@ -149,6 +162,7 @@ class QnAWorkflowService:
                         type=MessageType.LLM_REASONING_STEP,
                         data=content_chunk
                     )
+                    received_any_content = True
                 # 문자열인 경우 일반 응답 내용으로 처리
                 elif isinstance(content_chunk, str):
                     # 각 토큰이 의미 있는 내용을 가지고 있는지 확인 (빈 문자열 또는 공백/줄바꿈만 있는 경우 필터링)
@@ -160,6 +174,18 @@ class QnAWorkflowService:
                             type=MessageType.CONTENT,
                             content=content_chunk
                         )
+                        received_any_content = True
+            
+            # 응답이 없는 경우 기본 메시지 제공
+            if not received_any_content:
+                logger.warning(f"[{session_id}] LLM이 응답을 생성하지 않았습니다.")
+                default_message = "죄송합니다. 현재 응답을 생성할 수 없습니다. 다시 질문해 주세요."
+                current_content = default_message
+                yield LLMResponseChunk(
+                    session_id=session_id,
+                    type=MessageType.CONTENT,
+                    content=default_message
+                )
             
             # 응답 대화 기록에 추가
             if current_content:
@@ -172,9 +198,13 @@ class QnAWorkflowService:
             )
             
         except Exception as e:
-            logger.error(f"[{session_id}] LLM 응답 생성 오류: {str(e)}")
+            logger.error(f"[{session_id}] LLM 응답 생성 오류: {str(e)}", exc_info=True)
+            error_message = f"응답 생성 중 오류가 발생했습니다: {str(e)}"
             yield LLMResponseChunk(
                 session_id=session_id,
                 type=MessageType.ERROR,
-                data={"error_message": "응답 생성 중 오류가 발생했습니다.", "details": str(e)}
+                data={"error_message": error_message, "details": str(e)}
             )
+            
+            # 오류 메시지를 대화 기록에 추가
+            self.chat_history_service.add_message(session_id, "assistant", error_message)
