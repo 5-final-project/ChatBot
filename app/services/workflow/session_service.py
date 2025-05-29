@@ -73,15 +73,15 @@ class SessionService:
     
     def get_conversation_history(self, session_id: str) -> List[Dict[str, Any]]:
         """
-        세션 ID의 대화 기록을 가져옵니다.
+        세션 ID의 최근 10개 대화 기록을 가져옵니다.
         
         Args:
             session_id (str): 세션 ID
             
         Returns:
-            List[Dict[str, Any]]: 대화 기록
+            List[Dict[str, Any]]: 최근 10개의 대화 기록
         """
-        return self.chat_history_service.get_history(session_id)
+        return self.chat_history_service.get_recent_history(session_id, k=10)
     
     def add_user_message(self, session_id: str, message: str) -> None:
         """

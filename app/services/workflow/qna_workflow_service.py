@@ -120,7 +120,7 @@ class QnAWorkflowService:
             )
         
         # 대화 기록 가져오기
-        conversation_history = self.chat_history_service.get_history(session_id)
+        conversation_history = self.chat_history_service.get_recent_history(session_id, k=10)
         conversation_history_for_llm = []
         
         for entry in conversation_history:
