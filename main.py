@@ -1,6 +1,7 @@
 # main.py: FastAPI 애플리케이션의 메인 진입점 파일
 import logging # logging 임포트 추가
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware # CORS 미들웨어 임포트 추가
 from app.routers import chat as chat_router # chat 라우터 import
 from app.core.config import settings # 설정 import (prefix 등에 활용 가능)
 from app.services.workflow.workflow_manager import workflow_manager # workflow_manager 임포트
@@ -35,6 +36,15 @@ app = FastAPI(
             "description": "채팅 관련 엔드포인트"
         }
     ]
+)
+
+# CORS 미들웨어 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 모든 출처 허용 (개발 환경)
+    allow_credentials=True,
+    allow_methods=["*"],  # 모든 HTTP 메서드 허용
+    allow_headers=["*"],  # 모든 HTTP 헤더 허용
 )
 
 # 루트 엔드포인트
