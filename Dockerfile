@@ -16,7 +16,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONIOENCODING=utf-8 \
     LANG=C.UTF-8 \
     TZ=Asia/Seoul \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # 비료트 사용자 생성 및 사용
@@ -30,10 +29,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# pip 최신 버전으로 업그레이드
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# 구 버전 패키지 제거 후 새 버전 설치
+RUN pip uninstall -y google-generativeai || true
+RUN pip install --no-cache-dir --force-reinstall "google-genai>=1.16.0"
+
+# 패키지 버전 확인 (디버깅용)
+RUN pip list | grep google
+
 # requirements.txt 복사 및 종속성 설치
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# API 패키지가 다운그레이드되지 않도록 다시 확인
+RUN pip install --no-cache-dir --force-reinstall "google-genai>=1.16.0"
+RUN pip list | grep google
 
 # 애플리케이션 소스 코드 복사 (필요한 파일만 복사)
 COPY app/ ./app/

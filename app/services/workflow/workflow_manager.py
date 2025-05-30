@@ -90,7 +90,10 @@ class WorkflowManager:
             is_send_minutes_request = True
             
         # 회의록 전송 요청이 명확한 경우 즉시 스트리밍 시작
-        if is_send_minutes_request and request.meeting_context and request.meeting_context.hub_participant_names:
+        if is_send_minutes_request and request.meeting_context and (
+            request.meeting_context.hub_participant_names or 
+            request.meeting_context.hub_meeting_title
+        ):
             # 빠른 응답을 위한 초기 스트리밍 메시지
             yield self.core._format_sse_chunk(
                 session_id=session_id,

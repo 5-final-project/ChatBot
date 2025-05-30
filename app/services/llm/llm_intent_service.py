@@ -6,8 +6,10 @@ import logging
 import json
 import re
 import traceback
+import asyncio
 from typing import Dict, Any
 from app.services.llm.llm_core import gemini_model
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
@@ -71,50 +73,93 @@ JSON 형식:
         extracted_entities = {}
         
         try:
-            # Gemini API 호출
-            chat = self.model.create_chat()
-            if not chat:
-                logger.error("채팅 세션 생성 실패, 키워드 기반 분류로 대체합니다")
-                return self._classify_intent_by_keywords(query)
-            
-            response = await chat.send_message_async(prompt)
-            raw_llm_response = response.text.strip()
-            
-            reasoning_steps.append({
-                "step_description": "LLM raw response for intent/entity", 
-                "details": {"raw_llm_response": raw_llm_response}
-            })
-            
-            # LLM 응답 파싱
-            processed_llm_response = self._clean_json_response(raw_llm_response)
-            
+            # 최신 API로 직접 생성 요청
             try:
-                parsed_response = json.loads(processed_llm_response)
-                extracted_intent = parsed_response.get("intent", "unknown")
-                extracted_entities = parsed_response.get("entities", {})
+                # 생성 설정 준비
+                generation_config = self.model.get_generation_config()
                 
-                reasoning_steps.append({
-                    "step_description": "LLM response parsed successfully",
-                    "details": {
-                        "parsed_intent": extracted_intent, 
-                        "parsed_entities": extracted_entities
-                    }
-                })
-                
-                return {
-                    "intent": extracted_intent, 
-                    "entities": extracted_entities, 
-                    "reasoning_steps": reasoning_steps
+                # 사용자 메시지 생성 (최신 API 형식)
+                user_message = {
+                    "role": "user",
+                    "parts": [{"text": prompt}]
                 }
                 
-            except json.JSONDecodeError as e:
-                logger.error(f"LLM 응답 JSON 파싱 오류: {e}. 응답: {processed_llm_response}")
+                # 비동기 요청을 동기 방식으로 처리 (FastAPI 환경에서 실행)
+                loop = asyncio.get_event_loop()
+                response_future = loop.run_in_executor(
+                    None, 
+                    lambda: self.model.client.models.generate_content(
+                        model=self.model.model_name,
+                        contents=user_message,
+                        config=generation_config
+                    )
+                )
+                response = await response_future
+                
+                # 응답 텍스트 추출
+                raw_llm_response = ""
+                
+                # 응답 구조에 따라 텍스트 추출
+                if hasattr(response, 'text'):
+                    raw_llm_response = response.text.strip()
+                elif hasattr(response, 'candidates') and response.candidates:
+                    for candidate in response.candidates:
+                        if hasattr(candidate, 'content'):
+                            content = candidate.content
+                            if hasattr(content, 'parts'):
+                                for part in content.parts:
+                                    if hasattr(part, 'text') and part.text:
+                                        raw_llm_response += part.text
+                
                 reasoning_steps.append({
-                    "step_description": "LLM response JSON parsing error", 
-                    "details": {"error": str(e), "raw_response": processed_llm_response}
+                    "step_description": "LLM raw response for intent/entity", 
+                    "details": {"raw_llm_response": raw_llm_response}
                 })
                 
-                # 파싱 실패 시 키워드 기반 분류로 폴백
+                # LLM 응답 파싱
+                processed_llm_response = self._clean_json_response(raw_llm_response)
+                
+                try:
+                    parsed_response = json.loads(processed_llm_response)
+                    extracted_intent = parsed_response.get("intent", "unknown")
+                    extracted_entities = parsed_response.get("entities", {})
+                    
+                    reasoning_steps.append({
+                        "step_description": "LLM response parsed successfully",
+                        "details": {
+                            "parsed_intent": extracted_intent, 
+                            "parsed_entities": extracted_entities
+                        }
+                    })
+                    
+                    return {
+                        "intent": extracted_intent, 
+                        "entities": extracted_entities, 
+                        "reasoning_steps": reasoning_steps
+                    }
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"LLM 응답 JSON 파싱 오류: {e}. 응답: {processed_llm_response}")
+                    reasoning_steps.append({
+                        "step_description": "LLM response JSON parsing error", 
+                        "details": {"error": str(e), "raw_response": processed_llm_response}
+                    })
+                    
+                    # 파싱 실패 시 키워드 기반 분류로 폴백
+                    keyword_result = self._classify_intent_by_keywords(query)
+                    keyword_result["reasoning_steps"] = reasoning_steps + keyword_result.get("reasoning_steps", [])
+                    return keyword_result
+                
+            except Exception as api_error:
+                logger.error(f"최신 API 호출 중 오류 발생: {api_error}")
+                logger.error(traceback.format_exc())
+                
+                reasoning_steps.append({
+                    "step_description": "API call error", 
+                    "details": {"error": str(api_error)}
+                })
+                
+                # API 오류 시 키워드 기반 분류로 폴백
                 keyword_result = self._classify_intent_by_keywords(query)
                 keyword_result["reasoning_steps"] = reasoning_steps + keyword_result.get("reasoning_steps", [])
                 return keyword_result

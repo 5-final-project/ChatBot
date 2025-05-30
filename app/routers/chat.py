@@ -26,14 +26,13 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
     },
     "specific_document_query_with_context": {
         "summary": "특정 문서 및 회의 맥락을 포함한 RAG 질의",
-        "description": "특정 문서 ID('meeting_minutes_proj_alpha_v2')를 대상으로 검색하고, 현재 진행 중인 회의의 맥락 정보(ID, 제목, 참석자, 회의록 S3 URL)를 함께 제공하여 더욱 정확한 답변을 유도합니다.",
+        "description": "특정 문서 ID('meeting_minutes_proj_alpha_v2')를 대상으로 검색하고, 현재 진행 중인 회의의 맥락 정보(제목, 참석자, 회의록 S3 URL)를 함께 제공하여 더욱 정확한 답변을 유도합니다.",
         "value": {
             "query": "프로젝트 알파의 다음 마일스톤은 무엇인가요?",
             "session_id": "user123_session_abc789",
             "search_in_meeting_documents_only": False, 
             "target_document_ids": ["meeting_minutes_proj_alpha_v2"],
             "meeting_context": {
-                "hub_meeting_id": "hub_meeting_xyz789",
                 "hub_meeting_title": "프로젝트 알파 주간 동기화 회의",
                 "hub_participant_names": ["김팀장", "이개발", "박기획"],
                 "hub_minutes_s3_url": "s3://my-company-bucket/minutes/project_alpha_weekly_sync.pdf"
@@ -109,8 +108,18 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                     else:
                         logger.debug(f"기타 청크 수신: type={current_type}")
                     
-                    # 중복 end 이벤트 제거 (워크플로우 매니저가 보낸 end 이벤트는 무시)
+                    # END 이벤트 처리 - llm_streaming_service.py에서 보내는 이벤트 전달
                     if current_type == MessageType.END.value:
+                        event_data = {
+                            'type': current_type,
+                            'data': chunk_data.get('data', {})
+                        }
+                        json_data = json.dumps(
+                            event_data, 
+                            ensure_ascii=False,
+                            separators=(',', ':')
+                        )
+                        yield f"data: {json_data}\n\n"
                         continue
                     
                     # LLM 추론 과정 메시지 필터링 (의도 분류 관련 불필요한 추론 단계 제거)
@@ -124,46 +133,37 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                         content = chunk_data.get('content', '')
                         if not content:
                             content = chunk_data.get('data', {}).get('content', '')
+                            if not content:
+                                content = chunk_data.get('data', {}).get('text', '')
                         
                         # 내용이 없는 경우 스킵
                         if not content:
                             logger.debug("빈 콘텐츠 스킵")
                             continue
                         
-                        # 일반 콘텐츠 축적 (공백 포함 모든 문자 보존)
-                        accumulated_content += content
-                        current_time = time.time()
+                        # 한 글자씩 스트리밍하도록 변경 - 축적하지 않고 즉시 전송
+                        event_data = {
+                            'type': current_type,
+                            'data': {},
+                            'content': content
+                        }
                         
-                        # 일정 크기 이상이거나 일정 시간이 지났을 때만 전송
-                        if (len(accumulated_content) >= CONTENT_CHUNK_SIZE or
-                            current_time - last_content_time >= CONTENT_MAX_DELAY):
-                            
-                            event_data = {
-                                'type': current_type,
-                                'data': {},
-                                'content': accumulated_content
-                            }
-                            
-                            # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
-                            json_data = json.dumps(
-                                event_data, 
-                                ensure_ascii=False,
-                                separators=(',', ':')
-                            )
-                            
-                            # 즉시 yield - 원본 SSE 형식으로 전송
-                            yield f"data: {json_data}\n\n"
-                            
-                            # 초기화
-                            accumulated_content = ""
-                            last_content_time = current_time
+                        # 원본 데이터가 그대로 전달되도록 ensure_ascii=False 및 separators 옵션 설정
+                        json_data = json.dumps(
+                            event_data, 
+                            ensure_ascii=False,
+                            separators=(',', ':')
+                        )
+                        
+                        # 즉시 yield - 원본 SSE 형식으로 전송
+                        yield f"data: {json_data}\n\n"
                     
                     # LLM 추론 과정 메시지는 그대로 전달 (LLM_REASONING_STEP 타입)
                     elif current_type == MessageType.LLM_REASONING_STEP.value:
                         # 추론 과정은 그대로 전달 (타임스탬프 제거)
                         event_data = {
                             'type': current_type,
-                            'data': {
+                    'data': {
                                 'step_description': chunk_data.get('data', {}).get('step_description', ''),
                                 'details': chunk_data.get('data', {}).get('details', {})
                             }

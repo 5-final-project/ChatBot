@@ -52,8 +52,8 @@ class SessionService:
             return
             
         self.session_meeting_contexts[session_id] = meeting_context
-        meeting_id = getattr(meeting_context, 'hub_meeting_id', '알 수 없음')
-        logger.info(f"[{session_id}] 세션에 회의 컨텍스트 설정: {meeting_id}")
+        meeting_title = getattr(meeting_context, 'hub_meeting_title', '알 수 없음')
+        logger.info(f"[{session_id}] 세션에 회의 컨텍스트 설정: {meeting_title}")
     
     def remove_meeting_context(self, session_id: str) -> bool:
         """

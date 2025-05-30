@@ -121,17 +121,6 @@ class QnAWorkflowService:
         
         # 대화 기록 가져오기
         conversation_history = self.chat_history_service.get_recent_history(session_id, k=10)
-        conversation_history_for_llm = []
-        
-        for entry in conversation_history:
-            # 빈 메시지 필터링
-            if entry.get("content") and entry.get("content").strip():
-                conversation_history_for_llm.append({
-                    "role": entry["role"], 
-                    "content": entry["content"]  # Gemini 형식에 맞게 수정
-                })
-            else:
-                logger.warning(f"[{session_id}] 빈 메시지 필터링: {entry}")
         
         # 현재 쿼리를 대화 기록에 추가
         if request.query and request.query.strip():
@@ -139,57 +128,116 @@ class QnAWorkflowService:
             self.chat_history_service.add_message(session_id, "user", request.query)
             logger.info(f"[{session_id}] 현재 쿼리를 대화 기록에 추가: {request.query[:50]}{'...' if len(request.query) > 50 else ''}")
         
-        logger.info(f"[{session_id}] 대화 기록 {len(conversation_history_for_llm)}개 메시지 변환 완료")
+        logger.info(f"[{session_id}] 대화 기록 {len(conversation_history)}개 메시지 사용 예정")
         
         # LLM으로 응답 생성
         logger.info(f"[{session_id}] LLM 응답 생성 시작")
         
         try:
             # LLM 스트리밍 응답 생성
-            current_content = ""
+            current_content_buffer = "" # 최종 사용자 답변을 위한 버퍼
+            accumulated_text_for_parsing = "" # 추론과 답변 분리를 위한 누적 버퍼
             received_any_content = False
             
-            async for content_chunk in self.llm_service.generate_response_stream(
+            async for llm_event in self.llm_service.generate_response_stream(
                 prompt=request.query,
-                conversation_history=conversation_history_for_llm,
+                conversation_history=conversation_history,
                 retrieved_documents=retrieved_documents
             ):
-                # LLMReasoningStep 객체인 경우 추론 단계로 처리
-                if isinstance(content_chunk, dict) and "step_description" in content_chunk:
-                    # 즉시 추론 단계 내용 전달
-                    yield LLMResponseChunk(
-                        session_id=session_id,
-                        type=MessageType.LLM_REASONING_STEP,
-                        data=content_chunk
-                    )
+                event_type = llm_event.get("type")
+                event_data = llm_event.get("data")
+                
+                if event_type == "CONTENT" and event_data and "text" in event_data:
+                    text_chunk = event_data.get("text", "")
+                    accumulated_text_for_parsing += text_chunk
                     received_any_content = True
-                # 문자열인 경우 일반 응답 내용으로 처리
-                elif isinstance(content_chunk, str):
-                    # 각 토큰이 의미 있는 내용을 가지고 있는지 확인 (빈 문자열 또는 공백/줄바꿈만 있는 경우 필터링)
-                    if content_chunk.strip():
-                        current_content += content_chunk
-                        # 토큰별로 즉시 전달하여 실시간 스트리밍 효과
+
+                    # 그대로 전달
+                    if text_chunk.strip():
+                        current_content_buffer += text_chunk
                         yield LLMResponseChunk(
                             session_id=session_id,
                             type=MessageType.CONTENT,
-                            content=content_chunk
+                            content=text_chunk
+                        )
+                
+                elif event_type == "LLM_REASONING_STEP" and event_data: # 직접적인 추론 단계 객체
+                    # 추론 단계 처리
+                    reasoning_text = ""
+                    if "details" in event_data and "reasoning" in event_data["details"]:
+                        reasoning_text = event_data["details"]["reasoning"]
+                    elif "step_description" in event_data:
+                        reasoning_text = event_data["step_description"]
+                    
+                    if reasoning_text:
+                        # 이미 <think> 태그로 감싸진 추론 과정이므로 그대로 전달
+                        # <think> 태그가 없는 경우에만 추가
+                        if "<think>" not in reasoning_text:
+                            reasoning_text = f"<think>{reasoning_text}</think>"
+                        
+                        yield LLMResponseChunk(
+                            session_id=session_id,
+                            type=MessageType.CONTENT,
+                            content=reasoning_text
                         )
                         received_any_content = True
-            
+
+                elif event_type == "error" and event_data:
+                    # 에러 발생 시, 누적된 텍스트가 있다면 먼저 보냄
+                    if accumulated_text_for_parsing.strip():
+                        current_content_buffer += accumulated_text_for_parsing
+                        yield LLMResponseChunk(
+                            session_id=session_id,
+                            type=MessageType.CONTENT,
+                            content=accumulated_text_for_parsing
+                        )
+                        accumulated_text_for_parsing = ""
+                    
+                    yield LLMResponseChunk(
+                        session_id=session_id,
+                        type=MessageType.ERROR,
+                        data=event_data
+                    )
+                    # 오류 발생 시 현재 함수 종료
+                    if current_content_buffer: # 오류 전까지의 내용을 대화 기록에 저장
+                         self.chat_history_service.add_message(session_id, "assistant", current_content_buffer)
+                    return
+                
+                # event_data의 is_final 플래그를 확인하여 스트림 종료 처리 (llm_service에서 보내는 경우)
+                if isinstance(event_data, dict) and event_data.get("is_final") is True:
+                    if accumulated_text_for_parsing.strip(): # 마지막으로 남은 텍스트 처리
+                        current_content_buffer += accumulated_text_for_parsing
+                        yield LLMResponseChunk(
+                            session_id=session_id,
+                            type=MessageType.CONTENT,
+                            content=accumulated_text_for_parsing
+                        )
+                        accumulated_text_for_parsing = ""
+                    break # LLM 스트림 종료
+
+            # 스트림 정상 종료 후, 마지막으로 남은 accumulated_text_for_parsing 처리
+            if accumulated_text_for_parsing.strip():
+                current_content_buffer += accumulated_text_for_parsing
+                yield LLMResponseChunk(
+                    session_id=session_id,
+                    type=MessageType.CONTENT,
+                    content=accumulated_text_for_parsing
+                )
+
             # 응답이 없는 경우 기본 메시지 제공
             if not received_any_content:
                 logger.warning(f"[{session_id}] LLM이 응답을 생성하지 않았습니다.")
                 default_message = "죄송합니다. 현재 응답을 생성할 수 없습니다. 다시 질문해 주세요."
-                current_content = default_message
+                current_content_buffer = default_message
                 yield LLMResponseChunk(
                     session_id=session_id,
                     type=MessageType.CONTENT,
                     content=default_message
-                )
+                    )
             
             # 응답 대화 기록에 추가
-            if current_content:
-                self.chat_history_service.add_message(session_id, "assistant", current_content)
+            if current_content_buffer:
+                self.chat_history_service.add_message(session_id, "assistant", current_content_buffer)
                 
             yield LLMResponseChunk(
                 session_id=session_id,

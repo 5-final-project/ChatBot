@@ -54,15 +54,13 @@ class MeetingContext(BaseModel):
     외부 허브에서 제공된 현재 회의 관련 정보 모델입니다.
     
     Attributes:
-        hub_meeting_id (str, optional): 허브 회의 ID
         hub_meeting_title (str, optional): 허브 회의 제목
         hub_participant_names (List[str], optional): 허브 회의 참석자 이름 목록
-        hub_minutes_s3_url (str): 허브 회의록 S3 URL (필수)
+        hub_minutes_s3_url (str, optional): 허브 회의록 S3 URL
     """
-    hub_meeting_id: Optional[str] = Field(None, description="허브 회의 ID", example="hub_meeting_xyz789")
     hub_meeting_title: Optional[str] = Field(None, description="허브 회의 제목", example="2024년 2분기 전략 회의")
     hub_participant_names: Optional[List[str]] = Field(None, description="허브 회의 참석자 이름 목록", example=["김철수", "이영희", "박지성"])
-    hub_minutes_s3_url: str = Field(..., description="허브 회의록 S3 URL (필수 항목)", example="s3://my-bucket/minutes/meeting_xyz789.pdf")
+    hub_minutes_s3_url: Optional[str] = Field(None, description="허브 회의록 S3 URL", example="s3://my-bucket/minutes/meeting_xyz789.pdf")
 
 class ChatRequest(BaseModel):
     """
@@ -111,7 +109,6 @@ class ChatRequest(BaseModel):
                 "search_in_meeting_documents_only": True,
                 "target_document_ids": ["meeting_20230520"],
                 "meeting_context": {
-                    "hub_meeting_id": "meeting_123",
                     "hub_meeting_title": "5월 20일 팀 회의",
                     "hub_participant_names": ["John Doe", "Jane Doe"],
                     "hub_minutes_s3_url": "https://example.s3.amazonaws.com/meeting_minutes.pdf"

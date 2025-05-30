@@ -4,7 +4,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-dotenv
-google-generativeai
+google-generativeai>=0.8.5 # 최신 API 지원을 위해 버전 지정
 httpx # Mattermost API 호출 및 외부 API 연동용
 mattermostdriver # Mattermost API 연동용
 # SQLAlchemy # SQL DB 연동 시 (예시)
