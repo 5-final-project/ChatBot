@@ -110,6 +110,11 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                     
                     # END 이벤트 처리 - llm_streaming_service.py에서 보내는 이벤트 전달
                     if current_type == MessageType.END.value:
+                        # 이미 END 이벤트를 보냈다면 중복 전송하지 않음
+                        if sent_end_event:
+                            logger.debug("중복 END 이벤트 스킵")
+                            continue
+                        
                         event_data = {
                             'type': current_type,
                             'data': chunk_data.get('data', {})
@@ -120,6 +125,7 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                             separators=(',', ':')
                         )
                         yield f"data: {json_data}\n\n"
+                        sent_end_event = True
                         continue
                     
                     # LLM 추론 과정 메시지 필터링 (의도 분류 관련 불필요한 추론 단계 제거)
@@ -139,6 +145,16 @@ async def stream_rag_chat(request_data: ChatRequest = Body(..., examples={
                         # 내용이 없는 경우 스킵
                         if not content:
                             logger.debug("빈 콘텐츠 스킵")
+                            continue
+                        
+                        # 추론 과정과 답변이 함께 들어있는 마지막 중복 출력 필터링
+                        if content and (
+                            # 추론 과정 시작/종료 태그가 모두 포함된 경우 (전체 요약 응답)
+                            ("<think>" in content and "</think>" in content) or
+                            # 또는 추론 과정과 최종 답변이 모두 포함된 매우 긴 텍스트인 경우
+                            (len(content) > 1000 and "</think>" in content)
+                        ):
+                            logger.debug("추론과 답변이 함께 있는 중복 출력 필터링")
                             continue
                         
                         # 한 글자씩 스트리밍하도록 변경 - 축적하지 않고 즉시 전송
