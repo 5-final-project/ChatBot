@@ -14,3 +14,7 @@ mattermostdriver # Mattermost API 연동용
 aiomysql # 비동기 MySQL 드라이버
 pytest
 pytest-asyncio
+plotly>=5.18.0 # 인터랙티브 시각화를 위한 라이브러리
+matplotlib>=3.7.2 # 그래프 생성 라이브러리
+kaleido>=0.2.1 # Plotly 차트를 정적 이미지로 내보내기 위한 패키지
+seaborn>=0.12.2 # 통계 데이터 시각화 및 세련된 그래프 디자인 라이브러리

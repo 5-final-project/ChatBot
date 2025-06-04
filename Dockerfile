@@ -18,16 +18,28 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Seoul \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 비료트 사용자 생성 및 사용
-RUN groupadd -r appuser && useradd -r -g appuser appuser
-
 # 시스템 패키지 업데이트 및 필수 라이브러리만 설치 (최소화)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     default-libmysqlclient-dev \
     gcc \
     curl \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    xvfb \
+    xauth \
+    libxrender1 \
+    libfontconfig1 \
+    libxtst6 \
+    fontconfig \
+    fonts-nanum \
+    fonts-noto-cjk \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# 한글 폰트 설정
+RUN fc-cache -fv && \
+    echo "설치된 한글 폰트 목록:" && \
+    fc-list :lang=ko
 
 # pip 최신 버전으로 업그레이드
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
@@ -43,6 +55,10 @@ RUN pip list | grep google
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# kaleido 패키지 명시적 설치 (종속성 문제 해결을 위해)
+RUN pip uninstall -y kaleido || true
+RUN pip install --no-cache-dir "kaleido==0.2.1" plotly>=5.18.0 --force-reinstall
+
 # API 패키지가 다운그레이드되지 않도록 다시 확인
 RUN pip install --no-cache-dir --force-reinstall "google-genai>=1.16.0"
 RUN pip list | grep google
@@ -51,12 +67,8 @@ RUN pip list | grep google
 COPY app/ ./app/
 COPY main.py .
 
-# 필요한 디렉토리 생성 및 권한 설정
-RUN mkdir -p /app/logs /app/data && \
-    chown -R appuser:appuser /app
-
-# 비료트 사용자로 스위치
-USER appuser
+# 필요한 디렉토리 생성
+RUN mkdir -p /app/logs /app/data /app/static/visualizations
 
 # 포트 노출
 EXPOSE 8126

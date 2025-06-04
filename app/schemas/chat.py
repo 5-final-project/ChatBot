@@ -21,6 +21,7 @@ class MessageType(str, Enum):
     TASK_COMPLETE = "task_complete" # 특정 작업 완료 (예: Mattermost 전송 완료)
     RESULT = "result"  # 최종 결과 메시지 (예: Mattermost 전송 성공/실패 요약)
     WARNING = "warning"  # 경고 메시지
+    VISUALIZATION = "visualization"  # 시각화 결과 메시지
 
 class LLMResponseChunk(BaseModel):
     """
@@ -74,6 +75,8 @@ class ChatRequest(BaseModel):
         search_in_meeting_documents_only (bool, optional): 회의 문서만 검색할지 여부 (기본값: False)
         target_document_ids (List[str], optional): 특정 문서 ID로 검색 제한
         meeting_context (MeetingContext, optional): 외부 허브에서 제공된 현재 회의 관련 정보
+        use_retrieval (bool, optional): 검색 기능 사용 여부 (기본값: True)
+        top_k (int, optional): 검색할 최대 문서 수 (기본값: 5)
     """
     query: str = Field(
         ..., 
@@ -99,6 +102,18 @@ class ChatRequest(BaseModel):
     meeting_context: Optional[MeetingContext] = Field(
         None, 
         description="외부 허브에서 제공된 현재 회의 관련 정보"
+    )
+    use_retrieval: Optional[bool] = Field(
+        True,
+        description="검색 기능 사용 여부 (기본값: True)",
+        example=True
+    )
+    top_k: Optional[int] = Field(
+        5,
+        description="검색할 최대 문서 수 (기본값: 5)",
+        example=5,
+        ge=1,
+        le=20
     )
 
     class Config:

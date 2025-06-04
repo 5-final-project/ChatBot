@@ -56,6 +56,9 @@ JSON 형식:
 - "send_mattermost_minutes": 회의록이나 문서를 Mattermost로 전송 요청.
   (예: "주간 회의록 팀 채널에 보내줘", "[문서명] 매터모스트로 전달", "어제자 회의록 [사용자명/채널명]에게 공유")
   추출해야 할 엔티티: "document_name" (문서/회의록 이름 또는 ID), "target_user_or_channel" (전송 대상 사용자 또는 채널, 명시된 경우)
+- "visualize_data": 회의 내용이나 데이터를 시각화해달라는 요청.
+  (예: "KYC 갱신 현황 시각화해줘", "의심거래 데이터 차트로 보여줘", "규제 준수 일정 타임라인으로 보여줘")
+  추출해야 할 엔티티: "data_type" (시각화할 데이터 유형), "chart_type" (요청한 차트 유형, 명시된 경우)
 - "unsupported": 시스템이 지원하지 않는 기능 요청.
   (예: "오늘 날씨 어때?", "음악 틀어줘")
 
@@ -209,9 +212,46 @@ JSON 형식:
             Dict[str, Any]: 의도 분류 결과 및 엔티티 정보
         """
         default_entities = {}
+        query_lower = query.lower()
+        
+        # 시각화 관련 키워드 검사
+        if "시각화" in query_lower or "차트" in query_lower or "그래프" in query_lower or "보여줘" in query_lower or "그려줘" in query_lower:
+            # 시각화 유형 추출 시도
+            data_type = "unknown"
+            chart_type = "auto"
+            
+            # 데이터 유형 추출
+            if "kyc" in query_lower or "갱신" in query_lower:
+                data_type = "kyc_status"
+            elif "str" in query_lower or "의심거래" in query_lower:
+                data_type = "str_reports"
+            elif "일정" in query_lower or "로드맵" in query_lower or "타임라인" in query_lower:
+                data_type = "compliance_timeline"
+            elif "보안" in query_lower or "정보보호" in query_lower:
+                data_type = "security_issues"
+            
+            # 차트 유형 추출
+            if "파이" in query_lower:
+                chart_type = "pie"
+            elif "막대" in query_lower or "바" in query_lower:
+                chart_type = "bar"
+            elif "타임라인" in query_lower:
+                chart_type = "timeline"
+            
+            default_entities["data_type"] = data_type
+            default_entities["chart_type"] = chart_type
+            
+            return {
+                "intent": "visualize_data", 
+                "entities": default_entities, 
+                "reasoning_steps": [{
+                    "step_description": "Keyword-based intent classification", 
+                    "details": {"reason": "Visualization keywords detected"}
+                }]
+            }
         
         # 회의록 전송 관련 키워드 검사
-        if "회의록" in query and ("전송" in query or "매터모스트" in query or "전달" in query or "보내" in query or "공유" in query):
+        elif "회의록" in query and ("전송" in query or "매터모스트" in query or "전달" in query or "보내" in query or "공유" in query):
             # 간단한 회의 ID 추출 시도
             match = re.search(r"회의록\s*(\S+)|(\S+)\s*회의록", query)
             if match:
