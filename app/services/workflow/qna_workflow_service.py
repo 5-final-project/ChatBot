@@ -98,7 +98,7 @@ class QnAWorkflowService:
                             session_id=session_id,
                             type=MessageType.RETRIEVED_DOCUMENT,
                             data={
-                                "document_id": doc.document_id or f"doc_{i+1}",
+                                "document_id": doc.source_document_id or f"doc_{i+1}",
                                 "content_chunk": doc.content_chunk,
                                 "score": doc.score,
                                 "metadata": doc.metadata
@@ -139,10 +139,31 @@ class QnAWorkflowService:
             accumulated_text_for_parsing = "" # 추론과 답변 분리를 위한 누적 버퍼
             received_any_content = False
             
+            # 검색된 문서 정보 추출
+            doc_sources = []
+            if retrieved_documents:
+                for doc in retrieved_documents:
+                    doc_info = {}
+                    # 문서 제목을 메타데이터에서 가져오기
+                    if doc.metadata:
+                        if "title" in doc.metadata:
+                            doc_info["title"] = doc.metadata["title"]
+                        elif "doc_name" in doc.metadata:
+                            doc_info["title"] = doc.metadata["doc_name"]
+                        else:
+                            doc_info["title"] = f"문서 {doc.source_document_id}"
+                    else:
+                        doc_info["title"] = f"문서 {doc.source_document_id}"
+                    
+                    doc_info["id"] = doc.source_document_id
+                    doc_info["score"] = doc.score
+                    doc_sources.append(doc_info)
+            
             async for llm_event in self.llm_service.generate_response_stream(
                 prompt=request.query,
                 conversation_history=conversation_history,
-                retrieved_documents=retrieved_documents
+                retrieved_documents=retrieved_documents,
+                include_doc_sources=True  # 문서 출처 정보 포함 플래그
             ):
                 event_type = llm_event.get("type")
                 event_data = llm_event.get("data")

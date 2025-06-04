@@ -13,7 +13,7 @@ class ExternalRAGService:
     def __init__(self):
         # 오픈서치 API URL 설정
         self.base_url = os.environ.get("OPENSEARCH_API_URL", "https://team5opensearch.ap.loclx.io")
-        self.timeout = 30.0  # 요청 타임아웃 설정 (초)
+        self.timeout = 500.0  # 요청 타임아웃 설정 (초)
         self.search_endpoint = "/search/hybrid-reranked"  # 하이브리드 검색 엔드포인트
         # TODO: 실제 사용할 OpenSearch 인덱스 이름을 설정에서 가져오거나 상수로 정의하는 것을 고려
         self.default_search_indices = ["documents"] # 기본 검색 인덱스

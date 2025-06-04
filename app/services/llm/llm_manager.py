@@ -53,7 +53,8 @@ class LLMManager:
         self, 
         prompt: str, 
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        retrieved_documents: Optional[List[Union[RetrievedDocument, Dict[str, Any]]]] = None
+        retrieved_documents: Optional[List[Union[RetrievedDocument, Dict[str, Any]]]] = None,
+        include_doc_sources: bool = False
     ) -> AsyncGenerator[Union[str, LLMReasoningStep], None]:
         """
         스트리밍 방식으로 응답을 생성합니다.
@@ -62,6 +63,7 @@ class LLMManager:
             prompt (str): 사용자 프롬프트
             conversation_history (List[Dict], optional): 이전 대화 기록
             retrieved_documents (List[RetrievedDocument], optional): 검색된 문서 조각들
+            include_doc_sources (bool, optional): 참조 문서 출처 정보를 응답에 포함할지 여부
             
         Yields:
             Union[str, LLMReasoningStep]: 텍스트 조각 또는 추론 단계
@@ -69,7 +71,8 @@ class LLMManager:
         async for chunk in self.streaming_service.generate_response_stream(
             prompt=prompt,
             conversation_history=conversation_history,
-            retrieved_documents=retrieved_documents
+            retrieved_documents=retrieved_documents,
+            include_doc_sources=include_doc_sources
         ):
             yield chunk
     

@@ -31,7 +31,8 @@ class StreamingService:
         self, 
         prompt: str, 
         conversation_history: Optional[List[Dict[str, Any]]] = None,
-        retrieved_documents: Optional[List[Union[RetrievedDocument, Dict[str, Any]]]] = None
+        retrieved_documents: Optional[List[Union[RetrievedDocument, Dict[str, Any]]]] = None,
+        include_doc_sources: bool = False
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Gemini API를 사용하여 프롬프트에 대한 응답을 스트리밍 방식으로 생성합니다.
@@ -40,6 +41,7 @@ class StreamingService:
             prompt (str): 사용자 프롬프트
             conversation_history (List[Dict], optional): 이전 대화 기록
             retrieved_documents (List[RetrievedDocument], optional): 검색된 문서 조각들
+            include_doc_sources (bool, optional): 참조 문서 출처 정보를 응답에 포함할지 여부
             
         Yields:
             Dict[str, Any]: 스트리밍 응답 데이터
@@ -99,15 +101,53 @@ class StreamingService:
             # 검색된 문서가 있으면 추가
             if retrieved_documents and len(retrieved_documents) > 0:
                 context_text = "\n\n--- 참고 문서 조각 ---"
+                
+                # 문서 출처 정보를 추가하기 위한 메타데이터 목록
+                doc_sources_info = []
+                
                 for i, doc in enumerate(retrieved_documents):
+                    # 문서 메타데이터 추출
+                    doc_id = None
+                    doc_title = None
+                    doc_score = None
+                    
                     if isinstance(doc, RetrievedDocument):
                         doc_content = doc.content_chunk
+                        doc_id = doc.source_document_id
+                        doc_score = doc.score
+                        if doc.metadata and "title" in doc.metadata:
+                            doc_title = doc.metadata["title"]
                     elif isinstance(doc, dict):
                         doc_content = doc.get("content_chunk", "문서 내용 없음")
+                        doc_id = doc.get("source_document_id", f"doc_{i+1}")
+                        doc_score = doc.get("score", None)
+                        if "metadata" in doc and doc["metadata"] and "title" in doc["metadata"]:
+                            doc_title = doc["metadata"]["title"]
                     else:
                         doc_content = str(doc)
                     
+                    # 문서 출처 메타데이터 저장
+                    if include_doc_sources and doc_id:
+                        doc_info = {
+                            "id": doc_id,
+                            "title": doc_title or f"문서 {i+1}",
+                            "score": doc_score if doc_score is not None else 0.0
+                        }
+                        doc_sources_info.append(doc_info)
+                    
                     context_text += f"\n문서 {i+1}: {doc_content}"
+                
+                # 문서 출처 정보를 프롬프트에 추가 (include_doc_sources가 True인 경우)
+                if include_doc_sources and doc_sources_info:
+                    doc_sources_text = "\n\n--- 참고 문서 출처 정보 ---"
+                    for i, info in enumerate(doc_sources_info):
+                        doc_title = info['title'] if info['title'] else f"문서 {i+1}"
+                        doc_sources_text += f"\n문서 {i+1} 제목: {doc_title}, ID: {info['id']}, 유사도: {info['score']:.2f}"
+                    
+                    # 프롬프트에 출처 정보 추가 - 더 강력한 지시문으로 변경
+                    doc_sources_text += "\n\n중요: 사용자의 질문에 답변할 때 위 문서 정보를 참조하세요. 반드시 답변에 '문서 제목: XXX에 따르면...' 또는 '문서 N(문서 제목: XXX)에 언급된 바와 같이...' 형식으로 참조 출처를 포함해야 합니다. 문서 제목은 필수적으로 언급해 주세요."
+                    context_text += doc_sources_text
+                
                 user_message_text += context_text
                 logger.debug(f"검색된 문서 {len(retrieved_documents)}개 추가됨")
             
