@@ -15,6 +15,7 @@ from app.core.config import settings
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # DEBUG 레벨로 설정
 
 # Mattermost 설정 정보
 MATTERMOST_URL = settings.MATTERMOST_URL
@@ -144,6 +145,11 @@ def initialize_mattermost_client():
     scheme = connection_info['scheme']
     port = connection_info['port']
     
+    # 토큰 확인
+    if not MATTERMOST_TOKEN:
+        logger.error("Mattermost 클라이언트 초기화 실패: 봇 토큰이 설정되지 않았습니다.")
+        return None
+    
     # Driver 옵션 설정
     driver_options = {
         'url': hostname,
@@ -155,11 +161,21 @@ def initialize_mattermost_client():
     }
     
     logger.info(f"Initializing Mattermost driver with: {scheme}://{hostname}:{port}")
+    logger.debug(f"Mattermost Driver 옵션: url={hostname}, scheme={scheme}, port={port}, token_length={len(MATTERMOST_TOKEN) if MATTERMOST_TOKEN else 0}, verify=False")
     
     try:
         client = Driver(options=driver_options)
+        logger.debug("Mattermost Driver 인스턴스 생성 완료, 로그인 시도 중...")
         client.login()
         logger.info("Mattermost driver login successful")
+        
+        # 추가 정보 확인
+        try:
+            me_info = client.users.get_user('me')
+            logger.debug(f"Mattermost 로그인 사용자 정보: id={me_info.get('id')}, username={me_info.get('username')}")
+        except Exception as user_info_err:
+            logger.warning(f"로그인 사용자 정보 조회 실패: {user_info_err}")
+        
         return client
     except Exception as e:
         logger.error(f"Mattermost driver login failed: {e}")

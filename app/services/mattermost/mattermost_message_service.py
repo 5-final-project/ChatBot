@@ -3,20 +3,41 @@ Mattermost 메시지 서비스
 Mattermost 채널과 사용자에게 메시지를 전송하는 기능을 제공합니다.
 """
 import logging
-from typing import Optional, List, Dict, Any
 import json
+from typing import Optional, List, Dict, Any
 import traceback
-from app.services.mattermost.mattermost_core import mattermost_client, api_session
+import requests
+from app.services.mattermost.mattermost_core import mattermost_client, api_session, initialize_mattermost_client, MATTERMOST_URL, MATTERMOST_TOKEN
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # DEBUG 레벨로 설정
+
+# 사용자 ID와 채널 ID 매핑 테이블
+USER_CHANNEL_MAPPING = {
+    # 사용자ID: 채널ID 매핑
+    "hsk3kfeg1fbhprzha8y5fjznt": "wubqb3dh13fbieskw8mp6mjwqr",  # 김경훈
+    "zep68zadnfnfba9jzwit4btj": "4drb8h34oif6ucpfj6upjik9or",  # 김다희
+    "qrfanemf7yo7dq8jui8yorc1y": "5rptt34petncbc7u9x77ocipqy",  # 박재우
+    "374deoeaw3butxr4mybebxpgga": "ntanqift4tdsbkn6jmo7frkkyo",  # 윤웅상
+    "5qffg6wq33bgfn7uszgm6bfbo": "t3x11ds4gfb3ue1if6mda1einh",  # 오상우
+}
+
+# 기본 채널 ID (Town Square 등)
+DEFAULT_CHANNEL_ID = "town-square"
 
 class MessageService:
     """Mattermost 메시지 전송 기능을 제공하는 클래스"""
     
-    def __init__(self):
-        """메시지 서비스를 초기화합니다."""
+    def __init__(self, test_mode=False):
+        """
+        메시지 서비스를 초기화합니다.
+        
+        Args:
+            test_mode (bool): 테스트 모드 여부. True이면 실제 API 호출 없이 성공 응답 반환
+        """
         self.client = mattermost_client
         self.api = api_session
+        self.test_mode = test_mode
     
     def send_message_to_user(
         self, 
@@ -26,13 +47,13 @@ class MessageService:
         channel_id: Optional[str] = None 
     ) -> Dict[str, Any]:
         """
-        Mattermost 사용자에게 개인 메시지(DM)를 전송합니다.
+        Mattermost 사용자에게 메시지를 전송합니다.
         
         Args:
             message (str): 전송할 메시지 내용
             user_id (str, optional): Mattermost 사용자 ID
             file_ids (List[str], optional): 첨부할 파일 ID 목록
-            channel_id (str, optional): 기존 DM 채널 ID (제공되면 새 채널 생성 건너뜀)
+            channel_id (str, optional): 기존 채널 ID (제공되면 채널 조회 건너뜀)
             
         Returns:
             Dict[str, Any]: 전송 결과 및 관련 정보
@@ -40,117 +61,29 @@ class MessageService:
         result = {"success": False, "message": "", "data": {}}
         
         try:
-            # 채널 ID가 없으면 DM 채널을 생성
+            if self.test_mode:
+                result["success"] = True
+                result["message"] = "테스트 모드: 메시지가 성공적으로 전송된 것으로 처리됨"
+                return result
+                
+            # 채널 ID가 없으면 매핑 테이블에서 조회
             if not channel_id and user_id:
-                try:
-                    # 봇과 사용자 간의 DM 채널 생성
-                    logger.info(f"Creating DM channel with user: {user_id}")
-                    
-                    if self.client:
-                        # mattermostdriver를 사용하는 경우
-                        try:
-                            # API 메소드 변경: create_direct_channel -> create_direct_message_channel
-                            # 올바른 payload 형식으로 변경
-                            logger.info(f"Creating direct message channel with payload format 1")
-                            # user_id 경우에 따라 다르게 호출
-                            if user_id:
-                                try:
-                                    # 봇 ID 가져오기
-                                    bot_info = self.client.users.get_user('me')
-                                    bot_id = bot_info.get('id')
-                                    
-                                    if bot_id:
-                                        # 올바른 형식으로 페이로드 전송
-                                        channel_data = self.client.channels.create_direct_message_channel([bot_id, user_id])
-                                        channel_id = channel_data.get('id')
-                                    else:
-                                        raise Exception("봇 ID를 가져오는데 실패했습니다.")
-                                except Exception as e:
-                                    logger.warning(f"Direct message channel creation failed with format 1: {str(e)}")
-                                    raise
-                            else:
-                                raise ValueError("사용자 ID가 없습니다.")
-                        except (AttributeError, Exception) as e:
-                            logger.warning(f"Direct message channel error: {str(e)}")
-                            
-                            # 다른 API 메소드 시도 (API 버전에 따라 다를 수 있음)
-                            try:
-                                logger.info(f"Trying alternative API method for DM channel creation")
-                                channel_data = self.client.channels.create_direct_channel(user_id)
-                                channel_id = channel_data.get('id')
-                            except AttributeError:
-                                # 대체 방법: API 직접 호출
-                                logger.warning(f"Using fallback API direct call for DM channel creation")
-                                # 먼저 봇 ID 가져오기
-                                bot_info = self.client.users.get_user('me')
-                                bot_id = bot_info.get('id')
-                                if not bot_id:
-                                    raise Exception("봇 ID를 가져올 수 없습니다.")
-                                    
-                                # mattermostdriver 공식 문서에 따라 직접 HTTP API 호출 사용
-                                try:
-                                    import requests
-                                    
-                                    # API 연결 정보 사용
-                                    if not hasattr(self, 'base_url'):
-                                        # 한 번만 초기화
-                                        from app.core.config import settings
-                                        self.base_url = settings.MATTERMOST_URL
-                                        self.token = settings.MATTERMOST_BOT_TOKEN
-                                    
-                                    # API 엔드포인트 URL 구성
-                                    url = f"{self.base_url}/api/v4/channels/direct"
-                                    
-                                    # 헤더 설정
-                                    headers = {
-                                        'Authorization': f'Bearer {self.token}',
-                                        'Content-Type': 'application/json'
-                                    }
-                                    
-                                    # 요청 본문 - 사용자 ID 배열
-                                    payload = json.dumps([bot_id, user_id])
-                                    
-                                    # POST 요청 실행
-                                    logger.info(f"DM 채널 생성 요청: {url} - {bot_id}, {user_id}")
-                                    response = requests.post(url, headers=headers, data=payload, verify=False)
-                                    response.raise_for_status()
-                                    
-                                    # 응답에서 채널 ID 추출
-                                    result = response.json()
-                                    channel_id = result.get('id')
-                                    logger.info(f"DM 채널이 성공적으로 생성됨: {channel_id}")
-                                except Exception as e:
-                                    logger.error(f"DM 채널 생성 실패 (직접 API 호출): {str(e)}")
-                                    raise
-                    else:
-                        # 직접 API 호출을 사용하는 경우
-                        session = self.api["session"]
-                        base_url = self.api["base_url"]
-                        url = f"{base_url}/api/v4/channels/direct"
-                        
-                        # 봇 ID 가져오기
-                        bot_response = session.get(f"{base_url}/api/v4/users/me")
-                        bot_id = bot_response.json().get('id')
-                        
-                        # DM 채널 생성 (2인 채널)
-                        response = session.post(url, json=[bot_id, user_id])
-                        if response.status_code < 400:
-                            channel_data = response.json()
-                            channel_id = channel_data.get('id')
-                        else:
-                            raise Exception(f"DM 채널 생성 실패: {response.status_code} - {response.text}")
-                    
-                    logger.info(f"DM channel created with ID: {channel_id}")
-                except Exception as e:
-                    error_msg = f"DM 채널 생성 실패: {str(e)}"
-                    logger.error(error_msg)
-                    logger.error(traceback.format_exc())
-                    result["message"] = error_msg
+                channel_id = self._create_or_get_direct_message_channel(user_id)
+                
+                if not channel_id:
+                    result["message"] = "채널 ID 조회 실패"
                     return result
             
             if not channel_id:
                 result["message"] = "메시지 전송 실패: 채널 ID 또는 사용자 ID가 필요합니다."
+                logger.error(result["message"])
                 return result
+            
+            # 사용자 멘션 추가 (필요한 경우)
+            if user_id and DEFAULT_CHANNEL_ID == channel_id:
+                # 공용 채널일 경우 멘션 추가
+                if not message.startswith(f"@"):
+                    message = f"@{user_id} {message}"
             
             # 메시지 전송
             message_data = {
@@ -163,21 +96,29 @@ class MessageService:
             
             if self.client:
                 # mattermostdriver를 사용하는 경우
-                post_result = self.client.posts.create_post(message_data)
+                post_result = self.client.posts.create_post(options=message_data)
                 result["success"] = True
                 result["data"] = post_result
             else:
                 # 직접 API 호출을 사용하는 경우
-                session = self.api["session"]
-                base_url = self.api["base_url"]
-                url = f"{base_url}/api/v4/posts"
+                post_url = f"{MATTERMOST_URL}/api/v4/posts"
+                headers = {
+                    'Authorization': f'Bearer {MATTERMOST_TOKEN}',
+                    'Content-Type': 'application/json'
+                }
                 
-                response = session.post(url, json=message_data)
-                if response.status_code < 400:
+                response_post = requests.post(
+                    post_url, 
+                    headers=headers, 
+                    data=json.dumps(message_data), 
+                    verify=False
+                )
+                
+                if response_post.status_code in [200, 201]:
                     result["success"] = True
-                    result["data"] = response.json()
+                    result["data"] = response_post.json()
                 else:
-                    raise Exception(f"메시지 전송 실패: {response.status_code} - {response.text}")
+                    raise Exception(f"메시지 전송 실패: {response_post.status_code} - {response_post.text}")
             
             result["message"] = "메시지가 성공적으로 전송되었습니다."
             logger.info(f"Message sent to channel_id: {channel_id}")
@@ -189,6 +130,34 @@ class MessageService:
             logger.error(traceback.format_exc())
             result["message"] = error_msg
             return result
+            
+    def _create_or_get_direct_message_channel(self, user_id: str) -> Optional[str]:
+        """
+        봇과 사용자 간의 DM 채널을 가져옵니다.
+        
+        Args:
+            user_id (str): 대화할 사용자의 Mattermost ID
+            
+        Returns:
+            Optional[str]: 채널 ID 또는 None (실패 시)
+        """
+        try:
+            logger.info(f"Getting DM channel for user: {user_id}")
+            
+            # 매핑 테이블에서 채널 ID 확인
+            if user_id in USER_CHANNEL_MAPPING:
+                channel_id = USER_CHANNEL_MAPPING[user_id]
+                logger.info(f"Found channel ID in mapping table: {channel_id}")
+                return channel_id
+            
+            # 매핑 테이블에 없는 경우, 오류 로그 출력 후 None 반환
+            logger.error(f"사용자 ID {user_id}에 대한 매핑된 채널을 찾을 수 없습니다.")
+            return None
+                
+        except Exception as e:
+            logger.error(f"채널 ID 조회 중 오류 발생: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
     
     def send_message_to_channel(
         self, 
@@ -210,6 +179,11 @@ class MessageService:
         result = {"success": False, "message": "", "data": {}}
         
         try:
+            if self.test_mode:
+                result["success"] = True
+                result["message"] = "테스트 모드: 메시지가 성공적으로 전송된 것으로 처리됨"
+                return result
+                
             # 메시지 데이터 준비
             message_data = {
                 "channel_id": channel_id,
@@ -221,17 +195,25 @@ class MessageService:
             
             if self.client:
                 # mattermostdriver를 사용하는 경우
-                post_result = self.client.posts.create_post(message_data)
+                post_result = self.client.posts.create_post(options=message_data)
                 result["success"] = True
                 result["data"] = post_result
             else:
                 # 직접 API 호출을 사용하는 경우
-                session = self.api["session"]
-                base_url = self.api["base_url"]
-                url = f"{base_url}/api/v4/posts"
+                post_url = f"{MATTERMOST_URL}/api/v4/posts"
+                headers = {
+                    'Authorization': f'Bearer {MATTERMOST_TOKEN}',
+                    'Content-Type': 'application/json'
+                }
                 
-                response = session.post(url, json=message_data)
-                if response.status_code < 400:
+                response = requests.post(
+                    post_url, 
+                    headers=headers, 
+                    data=json.dumps(message_data), 
+                    verify=False
+                )
+                
+                if response.status_code in [200, 201]:
                     result["success"] = True
                     result["data"] = response.json()
                 else:

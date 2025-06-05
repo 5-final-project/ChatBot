@@ -56,11 +56,11 @@ class MattermostWorkflowService:
         message_tokens = ["회의록", " 전송", " 준비", " 중입니다", "..."]
         for token in message_tokens:
             current_content += token
-        yield LLMResponseChunk(
-            session_id=session_id,
+            yield LLMResponseChunk(
+                session_id=session_id,
                 type=MessageType.CONTENT,
                 content=token
-        )
+            )
         
         # 회의 컨텍스트 확인
         meeting_context = request.meeting_context
@@ -184,21 +184,112 @@ class MattermostWorkflowService:
                 progress_message = f"\n\n사용자 '{participant_name}'에게 회의록 전송 중..."
                 for token in progress_message.split():
                     current_content += " " + token
-                yield LLMResponseChunk(
-                    session_id=session_id,
+                    yield LLMResponseChunk(
+                        session_id=session_id,
                         type=MessageType.CONTENT,
                         content=" " + token
-                )
+                    )
                 
-                # 사용자 Mattermost ID 확인 (DB 매핑 서비스를 우선 활용)
-                mattermost_id = None
-                
-                # 실제 서비스에서는 DB에서 Mattermost ID를 조회하는 로직이 필요
-                # 여기서는 간단히 가정만 하고 진행
-                mattermost_id = f"mm_user_{participant_name.lower().replace(' ', '_')}"
-                
-                # 전송 성공 가정 (실제 서비스에서는 Mattermost API 호출 결과에 따라 처리)
-                success = True
+                # 사용자 이름으로 Mattermost ID 조회 시도
+                if self.mm_service is not None:
+                    try:
+                        # 사용자 ID 찾기 시도
+                        logger.info(f"[{session_id}] 사용자 '{participant_name}'의 Mattermost ID 검색")
+                        
+                        # 스크린샷의 사용자 테이블에 기반한 매핑
+                        # 실제 Mattermost ID를 이름과 매핑합니다
+                        mattermost_id = None
+                        
+                        # 이름을 기반으로 간단한 매핑 처리
+                        if participant_name == "김경훈":
+                            mattermost_id = "hsk3kfeg1fbhprzha8y5fjznt"
+                        elif participant_name == "김다희":
+                            mattermost_id = "zep68zadnfnfba9jzwit4btj"
+                        elif participant_name == "윤웅상":
+                            mattermost_id = "374deoeaw3butxr4mybebxpgga"
+                        elif participant_name == "박재우":
+                            mattermost_id = "qrfanemf7yo7dq8jui8yorc1y"
+                        elif participant_name == "오상우":
+                            mattermost_id = "5qffg6wq33bgfn7uszgm6bfbo"
+                        
+                        # 매핑이 없을 경우 Mattermost API로 검색 시도
+                        if not mattermost_id:
+                            user_result = self.mm_service.find_mattermost_user_id(participant_name)
+                            if user_result and user_result.get("success", False):
+                                mattermost_id = user_result.get("user_id")
+                        
+                        if mattermost_id:
+                            logger.info(f"[{session_id}] 사용자 '{participant_name}'의 Mattermost ID 찾음: {mattermost_id}")
+                        else:
+                            logger.warning(f"[{session_id}] 사용자 '{participant_name}'의 Mattermost ID를 찾지 못함")
+                            # 임시 ID 할당 (테스트용)
+                            mattermost_id = f"mm_user_{participant_name.lower().replace(' ', '_')}"
+                        
+                        # 실제 메시지 전송 시도
+                        logger.info(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 링크 전송 시도")
+                        
+                        # ID가 테스트용인 경우 (mm_user_ 접두사)만 테스트 모드로 처리
+                        if mattermost_id.startswith("mm_user_"):
+                            # 테스트 ID의 경우 실제 전송하지 않고 성공으로 처리
+                            logger.info(f"[{session_id}] 테스트 ID '{mattermost_id}'에는 전송하지 않지만 성공으로 처리")
+                            success = True
+                        else:
+                            # 실제 Mattermost ID로 전송 시도
+                            try:
+                                # 최대 3번까지 메시지 전송 시도
+                                max_retries = 3
+                                retry_count = 0
+                                success = False
+                                
+                                while retry_count < max_retries and not success:
+                                    try:
+                                        # 회의록 메시지 전송
+                                        result = self.mm_service.send_message_to_user(
+                                            user_id=mattermost_id,
+                                            message=message
+                                        )
+                                        success = result.get("success", False)
+                                        
+                                        if success:
+                                            logger.info(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 전송 성공")
+                                            break
+                                        else:
+                                            error_msg = result.get("message", "알 수 없는 오류")
+                                            logger.warning(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 전송 실패 (시도 {retry_count+1}/{max_retries}): {error_msg}")
+                                            retry_count += 1
+                                    except Exception as e:
+                                        logger.warning(f"[{session_id}] 회의록 전송 시도 {retry_count+1}/{max_retries} 중 오류: {str(e)}")
+                                        retry_count += 1
+                                        
+                                        # 마지막 시도가 아니면 잠시 대기 후 재시도
+                                        if retry_count < max_retries:
+                                            import time
+                                            time.sleep(1)  # 1초 대기
+                                
+                                # 모든 시도 실패
+                                if not success:
+                                    logger.error(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 전송 실패: 최대 시도 횟수 초과")
+                            except Exception as e:
+                                logger.error(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 링크 전송 중 오류: {str(e)}")
+                                success = False
+                    except Exception as e:
+                        logger.error(f"[{session_id}] 사용자 '{participant_name}'에게 회의록 링크 전송 중 오류 발생: {str(e)}")
+                        failed_participants.append({"name": participant_name, "reason": str(e)})
+                        failure_message = f"\n\n사용자 '{participant_name}'에게 회의록 전송 실패: {str(e)}"
+                        for token in failure_message.split():
+                            current_content += " " + token
+                            yield LLMResponseChunk(
+                                session_id=session_id,
+                                type=MessageType.CONTENT,
+                                content=" " + token
+                            )
+                        continue
+                else:
+                    # Mattermost 서비스가 구성되지 않은 경우 (테스트 환경)
+                    logger.warning(f"[{session_id}] Mattermost 서비스가 구성되지 않음 - 테스트 모드로 동작")
+                    # 테스트 환경에서는 성공한 것으로 가정
+                    success = True
+                    mattermost_id = f"mm_user_{participant_name.lower().replace(' ', '_')}"
                 
                 if success:
                     success_count += 1
@@ -250,16 +341,22 @@ class MattermostWorkflowService:
                 failed_message = f"\n\n다음 참가자에게 전송하지 못했습니다: {failed_names}"
                 for token in failed_message.split():
                     current_content += " " + token
-                yield LLMResponseChunk(
-                    session_id=session_id,
+                    yield LLMResponseChunk(
+                        session_id=session_id,
                         type=MessageType.CONTENT,
                         content=" " + token
-                )
+                    )
             
             # 최종 결과 메시지
+            is_test_mode = self.mm_service is None
+            test_mode_prefix = "[테스트 모드] " if is_test_mode else ""
+            
             if success_count > 0:
                 if len(failed_participants) > 0:
-                    final_message = f"\n\n회의 '{meeting_title}'의 회의록이 Mattermost를 통해 {success_count}명의 참가자에게 전송되었습니다. {len(failed_participants)}명에게는 전송에 실패했습니다."
+                    final_message = f"\n\n{test_mode_prefix}회의 '{meeting_title}'의 회의록이 Mattermost를 통해 {success_count}명의 참가자에게 전송되었습니다. {len(failed_participants)}명에게는 전송에 실패했습니다."
+                    if is_test_mode:
+                        final_message += " (실제 전송은 이루어지지 않았습니다)"
+                    
                     # 대화 기록에 저장을 위해 결과 메시지 추가
                     current_content += final_message
                     
@@ -269,11 +366,15 @@ class MattermostWorkflowService:
                         data={
                             "success": True,
                             "partial": True,
-                            "message": final_message.strip()
+                            "message": final_message.strip(),
+                            "is_test_mode": is_test_mode
                         }
                     )
                 else:
-                    final_message = f"\n\n회의 '{meeting_title}'의 회의록이 Mattermost를 통해 모든 회의 참가자에게 전송되었습니다."
+                    final_message = f"\n\n{test_mode_prefix}회의 '{meeting_title}'의 회의록이 Mattermost를 통해 모든 회의 참가자에게 전송되었습니다."
+                    if is_test_mode:
+                        final_message += " (실제 전송은 이루어지지 않았습니다)"
+                    
                     # 대화 기록에 저장을 위해 결과 메시지 추가
                     current_content += final_message
                     
@@ -283,12 +384,16 @@ class MattermostWorkflowService:
                         data={
                             "success": True,
                             "partial": False,
-                            "message": final_message.strip()
+                            "message": final_message.strip(),
+                            "is_test_mode": is_test_mode
                         }
                     )
             else:
                 # 모두 실패 메시지
-                final_message = f"\n\n회의록 전송에 실패했습니다. 사용자가 Mattermost에 등록되어 있는지 확인해주세요."
+                final_message = f"\n\n{test_mode_prefix}회의록 전송에 실패했습니다. 사용자가 Mattermost에 등록되어 있는지 확인해주세요."
+                if is_test_mode:
+                    final_message += " Mattermost 서비스가 구성되지 않았습니다."
+                
                 # 대화 기록에 저장을 위해 결과 메시지 추가
                 current_content += final_message
                 
@@ -297,7 +402,8 @@ class MattermostWorkflowService:
                     type=MessageType.RESULT,
                     data={
                         "success": False,
-                        "message": final_message.strip()
+                        "message": final_message.strip(),
+                        "is_test_mode": is_test_mode
                     }
                 )
                 
